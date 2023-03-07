@@ -1,7 +1,4 @@
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::cell::Cell;
 
 #[allow(clippy::wildcard_imports)]
 use windows::{
@@ -17,19 +14,20 @@ use windows::{
     },
 };
 
-use super::{dx, queue, Descriptor, DescriptorHeap, Image};
+use super::{
+    dx,
+    queue::{self, Graphics},
+    Descriptor, DescriptorHeap, Image,
+};
 
 /// A `Surface` controls the acquisition and presentation of images to its
 /// associated window.
 pub struct Surface {
-    dx: Rc<dx::Interfaces>,
-    graphics_queue: Rc<RefCell<queue::Graphics>>,
     flags: DXGI_SWAP_CHAIN_FLAG,
     // Use swapchain3 for color space support
     swapchain: IDXGISwapChain3,
     image_index: u32,
-    frame_counter: Cell<u64>,
-    render_targets: [Option<Image>; Surface::BUFFER_COUNT as usize],
+    render_targets: [Option<Image>; Self::BUFFER_COUNT as usize],
     waitable_object: HANDLE,
     rtv_heap: DescriptorHeap,
 }
@@ -41,7 +39,7 @@ impl Surface {
     // on SDR displays.
     const FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-    pub fn new(dx: Rc<dx::Interfaces>, queue: Rc<RefCell<queue::Graphics>>, window: HWND) -> Self {
+    pub fn new(dx: &dx::Interfaces, queue: &queue::Graphics, window: HWND) -> Self {
         // Setting this flag lets us limit the number of frames in the present
         // queue. If the application renders faster than the display can present
         // them, the application will block until the display catches up.
@@ -49,7 +47,7 @@ impl Surface {
 
         let swapchain: IDXGISwapChain3 = unsafe {
             dx.gi.CreateSwapChainForHwnd(
-                &queue.borrow().queue,
+                &queue.queue,
                 window,
                 &DXGI_SWAP_CHAIN_DESC1 {
                     Width: 0,  // automatically match the size of the window
@@ -99,28 +97,26 @@ impl Surface {
         let [a, b] = Self::get_render_targets(&dx, &swapchain, &mut rtv_heap);
 
         Self {
-            dx,
-            graphics_queue: queue,
             flags,
             swapchain,
             image_index: 0,
-            frame_counter: Cell::new(0),
             render_targets: [Some(a), Some(b)],
             waitable_object,
             rtv_heap,
         }
     }
 
-    pub fn resize(&mut self) {
-        // make sure that the render targets aren't currently in use
-        let mut graphics_queue = self.graphics_queue.borrow_mut();
-        graphics_queue.flush();
+    pub fn destroy(&mut self) {
+        unsafe { CloseHandle(self.waitable_object) }.unwrap();
+        self.waitable_object = HANDLE(0);
+    }
 
-        {
-            let rt = self.render_targets[0].take().unwrap();
-            self.rtv_heap.free(rt.rtv);
-            let rt = self.render_targets[1].take().unwrap();
-            self.rtv_heap.free(rt.rtv);
+    pub fn resize(&mut self, dx: &dx::Interfaces, graphics: &Graphics) {
+        // make sure that the render targets aren't currently in use
+        graphics.flush();
+
+        for rt in self.render_targets.iter_mut() {
+            self.rtv_heap.free(rt.take().unwrap().rtv);
         }
 
         unsafe {
@@ -134,7 +130,7 @@ impl Surface {
         }
         .unwrap();
 
-        let [a, b] = Self::get_render_targets(&self.dx, &self.swapchain, &mut self.rtv_heap);
+        let [a, b] = Self::get_render_targets(dx, &self.swapchain, &mut self.rtv_heap);
         self.render_targets = [Some(a), Some(b)];
     }
 
@@ -192,8 +188,11 @@ impl Surface {
 
 impl Drop for Surface {
     fn drop(&mut self) {
-        self.graphics_queue.borrow_mut().flush();
-        unsafe { CloseHandle(self.waitable_object) }.ok().unwrap();
+        assert_eq!(
+            self.waitable_object,
+            HANDLE(0),
+            "must call destroy before dropping Surface"
+        );
     }
 }
 
@@ -207,9 +206,6 @@ impl SurfaceImage<'_> {
     pub fn present(self) {
         // must check if the window is in windowed mode
 
-        self.surface
-            .frame_counter
-            .set(self.surface.frame_counter.get() + 1);
         // We assume that the window is not typically in borderless fullscreen,
         // and so use a presentation interval of 1 (VSync).
         unsafe { self.surface.swapchain.Present(1, 0) }.unwrap();

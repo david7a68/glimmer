@@ -156,28 +156,31 @@ impl GraphicsContext {
         }
     }
 
+    pub fn destroy_surface(&self, surface: &mut Surface) {
+        self.inner.borrow().destroy_surface(&mut surface.inner);
+    }
+
+    pub fn get_next_image<'a>(&self, surface: &'a mut Surface) -> SurfaceImage<'a> {
+        SurfaceImage {
+            inner: self.inner.borrow().get_next_image(&mut surface.inner),
+        }
+    }
+
+    pub fn resize(&self, surface: &mut Surface) {
+        self.inner.borrow().resize(&mut surface.inner)
+    }
+
     pub fn draw(&self, target: &Image, content: &RenderGraph) {
         self.inner.borrow_mut().draw(&target.inner, content);
+    }
+
+    pub fn upload_image(&self, pixels: &PixelBuffer) -> Image {
+        todo!()
     }
 }
 
 pub struct Surface {
     inner: platform::Surface,
-}
-
-impl Surface {
-    /// Retrieves the next image from the surface's swapchain.
-    ///
-    /// This fucntion will block until the next image is available.
-    pub fn get_next_image(&mut self) -> SurfaceImage {
-        SurfaceImage {
-            inner: self.inner.get_next_image(),
-        }
-    }
-
-    pub fn resize(&mut self) {
-        self.inner.resize();
-    }
 }
 
 pub struct SurfaceImage<'a> {

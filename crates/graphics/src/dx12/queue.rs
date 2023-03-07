@@ -18,7 +18,7 @@ pub struct Graphics {
     fence: ID3D12Fence,
     event: HANDLE,
     last_value: Cell<u64>,
-    next_value: u64,
+    next_value: Cell<u64>,
 }
 
 impl Graphics {
@@ -56,7 +56,7 @@ impl Graphics {
             fence,
             event,
             last_value: Cell::new(last_value),
-            next_value,
+            next_value: Cell::new(next_value),
         }
     }
 
@@ -77,10 +77,11 @@ impl Graphics {
         fence_value <= self.last_value.get()
     }
 
-    pub fn flush(&mut self) {
-        unsafe { self.queue.Signal(&self.fence, self.next_value).unwrap() };
-        self.wait_until(self.next_value);
-        self.next_value += 1;
+    pub fn flush(&self) {
+        let next_value = self.next_value.get();
+        unsafe { self.queue.Signal(&self.fence, next_value).unwrap() };
+        self.wait_until(next_value);
+        self.next_value.set(next_value + 1);
     }
 
     pub fn wait_until(&self, fence_value: u64) {
@@ -96,15 +97,17 @@ impl Graphics {
     }
 
     pub fn submit(&mut self, commands: &ID3D12GraphicsCommandList) -> u64 {
+        let next_value = self.next_value.get();
+
         unsafe {
             commands.Close().unwrap();
             let commands = commands.cast().unwrap();
             self.queue.ExecuteCommandLists(&[commands]);
-            self.queue.Signal(&self.fence, self.next_value).unwrap();
+            self.queue.Signal(&self.fence, next_value).unwrap();
         }
 
-        let fence_value = self.next_value;
-        self.next_value += 1;
+        let fence_value = next_value;
+        self.next_value.set(next_value + 1);
         fence_value
     }
 }

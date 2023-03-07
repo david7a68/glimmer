@@ -116,7 +116,7 @@ impl WindowHandler for AppWindow {
         _control: &mut dyn WindowSpawner<Self>,
         _inner_size: Extent<u32, ScreenSpace>,
     ) {
-        self.surface.resize();
+        self.graphics.resize(&mut self.surface);
     }
 
     fn on_rescale(
@@ -134,7 +134,7 @@ impl WindowHandler for AppWindow {
     }
 
     fn on_redraw(&mut self, _control: &mut dyn WindowSpawner<Self>) {
-        let image = self.surface.get_next_image();
+        let image = self.graphics.get_next_image(&mut self.surface);
 
         let mut render_graph = RenderGraph::new();
 
@@ -173,5 +173,11 @@ impl WindowHandler for AppWindow {
         self.graphics.draw(image.image(), &render_graph);
 
         image.present();
+    }
+}
+
+impl Drop for AppWindow {
+    fn drop(&mut self) {
+        self.graphics.destroy_surface(&mut self.surface);
     }
 }

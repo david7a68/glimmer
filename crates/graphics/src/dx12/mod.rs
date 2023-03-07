@@ -1,11 +1,6 @@
 //! # DX12 backend
 
-use std::{
-    cell::{Cell, RefCell},
-    collections::VecDeque,
-    ptr::NonNull,
-    rc::Rc,
-};
+use std::{cell::Cell, collections::VecDeque, ptr::NonNull};
 
 use geometry::{Extent, ScreenSpace};
 use raw_window_handle::RawWindowHandle;
@@ -73,8 +68,8 @@ struct FrameInFlight {
 }
 
 pub struct GraphicsContext {
-    dx: Rc<dx::Interfaces>,
-    graphics_queue: Rc<RefCell<queue::Graphics>>,
+    dx: dx::Interfaces,
+    graphics_queue: queue::Graphics,
 
     white_pixel: Option<Image>,
 
@@ -128,8 +123,8 @@ impl GraphicsContext {
         );
 
         Self {
-            dx: Rc::new(dx),
-            graphics_queue: Rc::new(RefCell::new(graphics_queue)),
+            dx,
+            graphics_queue: graphics_queue,
             white_pixel: None,
             polygon_shader,
             round_rect_shader,
@@ -143,13 +138,24 @@ impl GraphicsContext {
 
     pub fn create_surface(&self, window: RawWindowHandle) -> Surface {
         match window {
-            RawWindowHandle::Win32(handle) => Surface::new(
-                self.dx.clone(),
-                self.graphics_queue.clone(),
-                HWND(handle.hwnd as _),
-            ),
+            RawWindowHandle::Win32(handle) => {
+                Surface::new(&self.dx, &self.graphics_queue, HWND(handle.hwnd as _))
+            }
             _ => unimplemented!(),
         }
+    }
+
+    pub fn destroy_surface(&self, surface: &mut Surface) {
+        self.graphics_queue.flush();
+        surface.destroy();
+    }
+
+    pub fn get_next_image<'a>(&self, surface: &'a mut Surface) -> SurfaceImage<'a> {
+        surface.get_next_image()
+    }
+
+    pub fn resize(&self, surface: &mut Surface) {
+        surface.resize(&self.dx, &self.graphics_queue);
     }
 
     pub fn draw(&mut self, target: &Image, content: &RenderGraph) {
@@ -258,11 +264,10 @@ impl GraphicsContext {
     }
 
     fn begin_frame(&mut self) -> Frame {
-        let graphics_queue = self.graphics_queue.borrow();
         let num_complete = self
             .frames_in_flight
             .iter()
-            .take_while(|frame| graphics_queue.is_complete(frame.fence_value))
+            .take_while(|frame| self.graphics_queue.is_complete(frame.fence_value))
             .count();
 
         for FrameInFlight {
@@ -298,9 +303,7 @@ impl GraphicsContext {
     }
 
     fn submit_frame(&mut self, frame: Frame, alloc_marker: FrameMarker) -> u64 {
-        let mut graphics = self.graphics_queue.borrow_mut();
-
-        let fence_value = graphics.submit(&frame.command_list);
+        let fence_value = self.graphics_queue.submit(&frame.command_list);
 
         self.frames_in_flight.push_back(FrameInFlight {
             frame,
@@ -376,7 +379,7 @@ impl GraphicsContext {
 
 impl Drop for GraphicsContext {
     fn drop(&mut self) {
-        self.graphics_queue.borrow_mut().flush();
+        self.graphics_queue.flush();
     }
 }
 
