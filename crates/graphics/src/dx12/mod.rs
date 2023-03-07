@@ -1,3 +1,5 @@
+//! # DX12 backend
+
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -9,9 +11,9 @@ use geometry::{Extent, ScreenSpace};
 use raw_window_handle::RawWindowHandle;
 use smallvec::SmallVec;
 
-use windows::core::PCSTR;
 #[allow(clippy::wildcard_imports)]
 use windows::{
+    core::PCSTR,
     s,
     Win32::{
         Foundation::{HWND, RECT},
@@ -46,6 +48,8 @@ struct FrameInFlight {
 pub struct GraphicsContext {
     dx: Rc<dx::Interfaces>,
     graphics_queue: Rc<RefCell<graphics::Queue>>,
+
+    white_pixel: Option<ID3D12Resource>,
 
     polygon_shader: PolygonShader,
     round_rect_shader: RoundRectShader,
@@ -120,6 +124,7 @@ impl GraphicsContext {
         Self {
             dx: Rc::new(dx),
             graphics_queue: Rc::new(RefCell::new(graphics_queue)),
+            white_pixel: None,
             polygon_shader,
             round_rect_shader,
             upload_buffer,
@@ -142,10 +147,9 @@ impl GraphicsContext {
 
     pub fn draw(&mut self, target: &Image, content: &RenderGraph) {
         let frame = self.begin_frame();
+        let mut frame_alloc = self.upload_allocator.begin_frame();
 
-        let (frame_marker, imm_vertex_view, imm_index_view, imm_rect_view) = {
-            let mut frame_alloc = self.upload_allocator.begin_frame();
-
+        let (imm_vertex_view, imm_index_view, imm_rect_view) = {
             let vertex_memory = frame_alloc.upload(&content.imm_vertices).unwrap();
             let vertex_view = vertex_buffer_view::<Vertex>(&self.upload_buffer, &vertex_memory);
 
@@ -161,8 +165,22 @@ impl GraphicsContext {
             let rect_view =
                 vertex_buffer_view::<RoundedRectVertex>(&self.upload_buffer, &rect_memory);
 
-            (frame_alloc.finish(), vertex_view, index_view, rect_view)
+            (vertex_view, index_view, rect_view)
         };
+
+        let _white_pixel = if self.white_pixel.is_none() {
+            self.white_pixel = Some(create_white_pixel(
+                &self.dx,
+                &frame.command_list,
+                &self.upload_buffer,
+                &mut frame_alloc,
+            ));
+            self.white_pixel.as_ref().unwrap()
+        } else {
+            self.white_pixel.as_ref().unwrap()
+        };
+
+        let frame_marker = frame_alloc.finish();
 
         unsafe {
             frame.command_list.ResourceBarrier(&[transition_barrier(
@@ -629,4 +647,92 @@ fn vertex_buffer_view<T: Copy>(
         SizeInBytes: u32::try_from(allocation.size).unwrap(),
         StrideInBytes: u32::try_from(std::mem::size_of::<T>()).unwrap(),
     }
+}
+
+fn create_white_pixel(
+    dx: &dx::Interfaces,
+    command_list: &ID3D12GraphicsCommandList,
+    upload_heap: &ID3D12Resource,
+    upload_memory: &mut temp_allocator::FrameAllocator,
+) -> ID3D12Resource {
+    let desc = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Alignment: 0,
+        Width: 1,
+        Height: 1,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UINT,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: D3D12_RESOURCE_FLAG_NONE,
+    };
+
+    let mut image: Option<ID3D12Resource> = None;
+    unsafe {
+        dx.device
+            .CreateCommittedResource(
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_DEFAULT,
+                    CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                    MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+                    CreationNodeMask: 0,
+                    VisibleNodeMask: 0,
+                },
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                None,
+                &mut image,
+            )
+            .unwrap();
+    }
+    let image = image.unwrap();
+
+    let upload_allocation = upload_memory.upload(&[255, 255, 255, 255]).unwrap();
+
+    let placed_desc = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+        Offset: upload_allocation.heap_offset,
+        Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+            Format: DXGI_FORMAT_R8G8B8A8_UINT,
+            Width: 1,
+            Height: 1,
+            Depth: 1,
+            RowPitch: D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
+        },
+    };
+
+    unsafe {
+        command_list.CopyTextureRegion(
+            &D3D12_TEXTURE_COPY_LOCATION {
+                pResource: windows::core::ManuallyDrop::new(&image),
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
+            },
+            0,
+            0,
+            0,
+            &D3D12_TEXTURE_COPY_LOCATION {
+                pResource: windows::core::ManuallyDrop::new(upload_heap),
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: placed_desc,
+                },
+            },
+            None,
+        );
+
+        command_list.ResourceBarrier(&[transition_barrier(
+            &image,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )]);
+    }
+
+    image
 }
