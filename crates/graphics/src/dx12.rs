@@ -95,6 +95,7 @@ pub struct Surface {
     flags: DXGI_SWAP_CHAIN_FLAG,
     swapchain: IDXGISwapChain3,
     image_index: u32,
+    render_targets: [ID3D12Resource; Surface::BUFFER_COUNT as usize],
     waitable_object: HANDLE,
     render_target_descriptor_heap: ID3D12DescriptorHeap,
 }
@@ -194,6 +195,7 @@ impl Surface {
             flags,
             swapchain,
             image_index: 0,
+            render_targets,
             waitable_object,
             render_target_descriptor_heap,
         }
