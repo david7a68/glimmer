@@ -11,6 +11,7 @@ use geometry::{Extent, ScreenSpace};
 use raw_window_handle::RawWindowHandle;
 use smallvec::SmallVec;
 
+use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 #[allow(clippy::wildcard_imports)]
 use windows::{
     core::PCSTR,
@@ -22,7 +23,7 @@ use windows::{
 };
 
 use crate::{
-    render_graph::RenderGraph,
+    render_graph::{RenderGraph, RenderGraphCommand},
     temp_allocator::{self, FrameMarker},
     GraphicsConfig, RenderGraphNodeId, RoundedRectVertex, Vertex,
 };
@@ -39,6 +40,28 @@ struct Frame {
     command_allocator: ID3D12CommandAllocator,
 }
 
+impl Frame {
+    fn new(dx: &dx::Interfaces) -> Self {
+        let allocator = unsafe {
+            dx.device
+                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+        }
+        .unwrap();
+
+        let command_list: ID3D12GraphicsCommandList = unsafe {
+            dx.device
+                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
+        }
+        .unwrap();
+
+        Self {
+            barriers: SmallVec::new(),
+            command_list,
+            command_allocator: allocator,
+        }
+    }
+}
+
 struct FrameInFlight {
     frame: Frame,
     fence_value: u64,
@@ -51,8 +74,8 @@ pub struct GraphicsContext {
 
     white_pixel: Option<ID3D12Resource>,
 
-    polygon_shader: PolygonShader,
-    round_rect_shader: RoundRectShader,
+    polygon_shader: Shader<ShaderConstants>,
+    round_rect_shader: Shader<ShaderConstants>,
 
     upload_buffer: ID3D12Resource,
     upload_allocator: temp_allocator::Allocator,
@@ -69,8 +92,8 @@ impl GraphicsContext {
 
         let graphics_queue = graphics::Queue::new(&dx);
 
-        let polygon_shader = PolygonShader::new(&dx);
-        let round_rect_shader = RoundRectShader::new(&dx);
+        let polygon_shader = create_polygon_shader(&dx);
+        let round_rect_shader = create_rounded_rect_shader(&dx);
 
         // create upload buffer
         let upload_buffer: ID3D12Resource = unsafe {
@@ -168,17 +191,14 @@ impl GraphicsContext {
             (vertex_view, index_view, rect_view)
         };
 
-        let _white_pixel = if self.white_pixel.is_none() {
-            self.white_pixel = Some(create_white_pixel(
+        let _white_pixel = self.white_pixel.get_or_insert_with(|| {
+            create_white_pixel(
                 &self.dx,
                 &frame.command_list,
                 &self.upload_buffer,
                 &mut frame_alloc,
-            ));
-            self.white_pixel.as_ref().unwrap()
-        } else {
-            self.white_pixel.as_ref().unwrap()
-        };
+            )
+        });
 
         let frame_marker = frame_alloc.finish();
 
@@ -201,8 +221,9 @@ impl GraphicsContext {
 
             let target_desc = target.resource.GetDesc();
 
-            let constants =
-                ShaderConstants::new(Extent::new(target_desc.Width as u32, target_desc.Height));
+            let constants = ShaderConstants {
+                viewport: Extent::new(target_desc.Width as u32, target_desc.Height),
+            };
 
             frame.command_list.RSSetViewports(&[D3D12_VIEWPORT {
                 TopLeftX: 0.0,
@@ -246,32 +267,43 @@ impl GraphicsContext {
     }
 
     fn begin_frame(&mut self) -> Frame {
-        self.reclaim_completed_frames();
+        let graphics_queue = self.graphics_queue.borrow();
+        let num_complete = self
+            .frames_in_flight
+            .iter()
+            .take_while(|frame| graphics_queue.is_complete(frame.fence_value))
+            .count();
 
-        self.unused_frames.pop().unwrap_or_else(|| {
-            let allocator = unsafe {
-                self.dx
-                    .device
-                    .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+        for FrameInFlight {
+            mut frame,
+            alloc_marker: frame_marker,
+            ..
+        } in self.frames_in_flight.drain(..num_complete)
+        {
+            for mut barrier in frame.barriers.drain(..) {
+                match barrier.Type {
+                    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION => unsafe {
+                        std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition)
+                    },
+                    _ => unimplemented!(),
+                }
             }
-            .unwrap();
 
-            let command_list: ID3D12GraphicsCommandList = unsafe {
-                self.dx.device.CreateCommandList(
-                    0,
-                    D3D12_COMMAND_LIST_TYPE_DIRECT,
-                    &allocator,
-                    None,
-                )
+            unsafe {
+                frame.command_allocator.Reset().unwrap();
+                frame
+                    .command_list
+                    .Reset(&frame.command_allocator, None)
+                    .unwrap();
             }
-            .unwrap();
 
-            Frame {
-                barriers: SmallVec::new(),
-                command_list,
-                command_allocator: allocator,
-            }
-        })
+            self.upload_allocator.free_frame(frame_marker);
+            self.unused_frames.push(frame);
+        }
+
+        self.unused_frames
+            .pop()
+            .unwrap_or_else(|| Frame::new(&self.dx))
     }
 
     fn submit_frame(&mut self, frame: Frame, alloc_marker: FrameMarker) -> u64 {
@@ -288,93 +320,57 @@ impl GraphicsContext {
         fence_value
     }
 
-    fn reclaim_completed_frames(&mut self) {
-        let graphics_queue = self.graphics_queue.borrow();
-
-        let mut i = 0;
-        for frame in &self.frames_in_flight {
-            if graphics_queue.is_complete(frame.fence_value) {
-                i += 1;
-            } else {
-                break;
-            }
-        }
-
-        for FrameInFlight {
-            mut frame,
-            alloc_marker: frame_marker,
-            ..
-        } in self.frames_in_flight.drain(..i)
-        {
-            for mut barrier in frame.barriers.drain(..) {
-                if barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
-                    unsafe { std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition) };
-                }
-            }
-
-            self.upload_allocator.free_frame(frame_marker);
-
-            unsafe {
-                frame.command_allocator.Reset().unwrap();
-                frame
-                    .command_list
-                    .Reset(&frame.command_allocator, None)
-                    .unwrap();
-                self.unused_frames.push(frame);
-            }
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn record_render_graph(
         &self,
         command_list: &ID3D12GraphicsCommandList,
         content: &RenderGraph,
-        node: RenderGraphNodeId,
+        node_id: RenderGraphNodeId,
         constants: &ShaderConstants,
         imm_rect_view: &D3D12_VERTEX_BUFFER_VIEW,
         imm_index_view: &D3D12_INDEX_BUFFER_VIEW,
         imm_vertex_view: &D3D12_VERTEX_BUFFER_VIEW,
     ) {
-        use crate::render_graph::RenderGraphCommand;
+        'draw: {
+            let (first_index, num_indices, shader, vertex_view) = match content.get(node_id) {
+                RenderGraphCommand::Root => {
+                    assert_eq!(node_id, RenderGraphNodeId::root());
+                    break 'draw;
+                }
+                RenderGraphCommand::DrawImmediate {
+                    first_index,
+                    num_indices,
+                } => (
+                    *first_index,
+                    *num_indices,
+                    &self.polygon_shader,
+                    imm_vertex_view,
+                ),
+                RenderGraphCommand::DrawRect {
+                    first_index,
+                    num_indices,
+                } => (
+                    *first_index,
+                    *num_indices,
+                    &self.round_rect_shader,
+                    imm_rect_view,
+                ),
+            };
 
-        match content.get(node) {
-            RenderGraphCommand::Root => assert_eq!(node, RenderGraphNodeId::root()),
-            RenderGraphCommand::DrawImmediate {
-                first_index,
-                num_indices,
-            } => unsafe {
-                self.polygon_shader.bind(command_list, constants);
-                command_list.IASetVertexBuffers(0, Some(&[*imm_vertex_view]));
-                command_list.IASetIndexBuffer(Some(imm_index_view));
+            shader.bind(command_list, constants, vertex_view, imm_index_view);
 
+            unsafe {
                 command_list.DrawIndexedInstanced(
-                    u32::from(*num_indices),
+                    u32::from(num_indices),
                     1,
-                    u32::from(*first_index),
+                    u32::from(first_index),
                     0,
                     0,
                 );
-            },
-            RenderGraphCommand::DrawRect {
-                first_index,
-                num_indices,
-            } => unsafe {
-                self.round_rect_shader.bind(command_list, constants);
-                command_list.IASetVertexBuffers(0, Some(&[*imm_rect_view]));
-                command_list.IASetIndexBuffer(Some(imm_index_view));
-
-                command_list.DrawIndexedInstanced(
-                    u32::from(*num_indices),
-                    1,
-                    u32::from(*first_index),
-                    0,
-                    0,
-                );
-            },
+            }
         }
 
-        for child in content.iter_children(node) {
+        for child in content.iter_children(node_id) {
             self.record_render_graph(
                 command_list,
                 content,
@@ -423,101 +419,70 @@ struct ShaderConstants {
     viewport: Extent<u32, ScreenSpace>,
 }
 
-impl ShaderConstants {
-    fn new(viewport: Extent<u32, ScreenSpace>) -> Self {
-        Self { viewport }
-    }
-
-    fn write(&self, command_list: &ID3D12GraphicsCommandList) {
-        unsafe {
-            command_list.SetGraphicsRoot32BitConstants(
-                0,
-                2,
-                [self.viewport.width, self.viewport.height].as_ptr().cast(),
-                0,
-            );
-        }
-    }
-}
-
-struct PolygonShader {
-    shader: Shader,
-}
-
-impl PolygonShader {
-    const UI_VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/polygon_vs.cso"));
-    const UI_PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/polygon_ps.cso"));
-
-    #[allow(clippy::too_many_lines)]
-    fn new(dx: &dx::Interfaces) -> Self {
-        let shader = Shader::new(
-            dx,
-            Self::UI_VERTEX_SHADER,
-            Self::UI_PIXEL_SHADER,
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
-            &[
-                vertex_input(s!("POSITION"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
-                vertex_input(s!("COLOR"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
-            ],
+impl PushConstants for ShaderConstants {
+    unsafe fn write(&self, command_list: &ID3D12GraphicsCommandList) {
+        command_list.SetGraphicsRoot32BitConstants(
+            0,
+            2,
+            [self.viewport.width, self.viewport.height].as_ptr().cast(),
+            0,
         );
-
-        Self { shader }
-    }
-
-    fn bind(&self, command_list: &ID3D12GraphicsCommandList, constants: &ShaderConstants) {
-        self.shader.bind(command_list);
-        constants.write(command_list);
-        unsafe { command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
     }
 }
 
-struct RoundRectShader {
-    shader: Shader,
+fn create_polygon_shader(dx: &dx::Interfaces) -> Shader<ShaderConstants> {
+    Shader::new(
+        dx,
+        include_bytes!(concat!(env!("OUT_DIR"), "/polygon_vs.cso")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/polygon_ps.cso")),
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        &[
+            vertex_input(s!("POSITION"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+            vertex_input(s!("TEXCOORD"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+            vertex_input(s!("COLOR"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+        ],
+    )
 }
 
-impl RoundRectShader {
-    const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rect_vs.cso"));
-    const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rect_ps.cso"));
-
-    fn new(dx: &dx::Interfaces) -> Self {
-        let shader = Shader::new(
-            dx,
-            Self::VERTEX_SHADER,
-            Self::PIXEL_SHADER,
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
-            &[
-                vertex_input(s!("POSITION"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
-                vertex_input(s!("RECT_SIZE"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
-                vertex_input(s!("RECT_CENTER"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
-                vertex_input(s!("OUTER_RADIUS"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
-                vertex_input(s!("INNER_RADIUS"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
-                vertex_input(s!("COLOR\0"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
-            ],
-        );
-
-        Self { shader }
-    }
-
-    fn bind(&self, command_list: &ID3D12GraphicsCommandList, constants: &ShaderConstants) {
-        self.shader.bind(command_list);
-        constants.write(command_list);
-        unsafe { command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
-    }
+fn create_rounded_rect_shader(dx: &dx::Interfaces) -> Shader<ShaderConstants> {
+    Shader::new(
+        dx,
+        include_bytes!(concat!(env!("OUT_DIR"), "/rect_vs.cso")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/rect_ps.cso")),
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        &[
+            vertex_input(s!("POSITION"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+            vertex_input(s!("RECT_SIZE"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+            vertex_input(s!("RECT_CENTER"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+            vertex_input(s!("OUTER_RADIUS"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+            vertex_input(s!("INNER_RADIUS"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+            vertex_input(s!("COLOR\0"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+        ],
+    )
 }
 
-struct Shader {
+trait PushConstants {
+    unsafe fn write(&self, command_list: &ID3D12GraphicsCommandList);
+}
+
+struct Shader<Constants: PushConstants> {
     root_signature: ID3D12RootSignature,
     pipeline_state: ID3D12PipelineState,
+    primitive_topology: D3D_PRIMITIVE_TOPOLOGY,
+    phantom: std::marker::PhantomData<Constants>,
 }
 
-impl Shader {
+impl<Constants: PushConstants> Shader<Constants> {
     fn new(
         dx: &dx::Interfaces,
         vertex_shader: &[u8],
         pixel_shader: &[u8],
         format: DXGI_FORMAT,
+        topology: D3D_PRIMITIVE_TOPOLOGY,
         input: &[D3D12_INPUT_ELEMENT_DESC],
-    ) -> Shader {
+    ) -> Self {
         let root_signature = unsafe { dx.device.CreateRootSignature(0, vertex_shader) }.unwrap();
 
         let mut blend_targets = [D3D12_RENDER_TARGET_BLEND_DESC::default(); 8];
@@ -610,13 +575,25 @@ impl Shader {
         Self {
             root_signature,
             pipeline_state,
+            primitive_topology: topology,
+            phantom: std::marker::PhantomData,
         }
     }
 
-    fn bind(&self, command_list: &ID3D12GraphicsCommandList) {
+    fn bind(
+        &self,
+        command_list: &ID3D12GraphicsCommandList,
+        constants: &Constants,
+        vbuf: &D3D12_VERTEX_BUFFER_VIEW,
+        ibuf: &D3D12_INDEX_BUFFER_VIEW,
+    ) {
         unsafe {
             command_list.SetPipelineState(&self.pipeline_state);
             command_list.SetGraphicsRootSignature(&self.root_signature);
+            command_list.IASetPrimitiveTopology(self.primitive_topology);
+            command_list.IASetVertexBuffers(0, Some(&[*vbuf]));
+            command_list.IASetIndexBuffer(Some(ibuf));
+            constants.write(command_list);
         }
     }
 }
