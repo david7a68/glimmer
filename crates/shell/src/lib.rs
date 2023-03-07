@@ -46,6 +46,7 @@ use winit::{
     dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
     event::{Event, WindowEvent},
     event_loop::EventLoop,
+    platform::windows::WindowBuilderExtWindows,
 };
 
 /// Mouse buttons (e.g. left, right, middle, etc.)
@@ -360,6 +361,9 @@ impl<'a, Handler: WindowHandler> WindowDesc<'a, Handler> {
         if let Some(max_size) = self.max_size {
             builder = builder.with_max_inner_size(as_logical_size(max_size));
         }
+
+        #[cfg(target_os = "windows")]
+        let builder = builder.with_no_redirection_bitmap(true);
 
         let window = builder.build(target).unwrap();
         let id = window.id();
