@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     rc::Rc,
 };
 
@@ -22,10 +23,24 @@ mod temp_allocator;
 
 pub use surface::{Surface, SurfaceImage};
 
+struct Frame {
+    barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
+    command_list: ID3D12GraphicsCommandList,
+    command_allocator: ID3D12CommandAllocator,
+}
+
+struct FrameInFlight {
+    frame: Frame,
+    // frame_marker: FrameMarker,
+    fence_value: u64,
+}
+
 pub struct GraphicsContext {
     dx: Rc<dx::Interfaces>,
     graphics_queue: Rc<RefCell<graphics::Queue>>,
     ui_shader: UiShader,
+    unused_frames: Vec<Frame>,
+    frames_in_flight: VecDeque<FrameInFlight>,
 }
 
 impl GraphicsContext {
@@ -40,6 +55,8 @@ impl GraphicsContext {
             dx: Rc::new(dx),
             graphics_queue: Rc::new(RefCell::new(graphics_queue)),
             ui_shader,
+            unused_frames: Vec::new(),
+            frames_in_flight: VecDeque::new(),
         }
     }
 
@@ -55,20 +72,20 @@ impl GraphicsContext {
     }
 
     pub fn draw(&mut self, target: &Image, _content: &RenderGraph) {
-        let mut graphics = self.graphics_queue.borrow_mut();
-        graphics.release_completed_submissions();
-
-        let allocator = graphics.get_command_allocator(&self.dx);
-        let command_list = graphics.get_command_list(&self.dx, &allocator);
+        let frame = self.begin_frame();
 
         unsafe {
-            command_list.ResourceBarrier(&[transition_barrier(
+            frame.command_list.ResourceBarrier(&[transition_barrier(
                 &target.resource,
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             )]);
 
-            command_list.ClearRenderTargetView(target.rtv, [0.5, 0.5, 0.5, 1.0].as_ptr(), &[]);
+            frame.command_list.ClearRenderTargetView(
+                target.rtv,
+                [0.5, 0.5, 0.5, 1.0].as_ptr(),
+                &[],
+            );
 
             // record draw commands!
 
@@ -76,15 +93,85 @@ impl GraphicsContext {
 
             // draw
 
-            command_list.ResourceBarrier(&[transition_barrier(
+            frame.command_list.ResourceBarrier(&[transition_barrier(
                 &target.resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             )]);
         }
 
-        let fence_value = graphics.submit(allocator, &[command_list], SmallVec::default());
+        let fence_value = self.submit_frame(frame);
         target.last_use.set(fence_value);
+    }
+
+    fn begin_frame(&mut self) -> Frame {
+        self.reclaim_completed_frames();
+
+        self.unused_frames.pop().unwrap_or_else(|| {
+            let allocator = unsafe {
+                self.dx
+                    .device
+                    .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+            }
+            .unwrap();
+
+            let command_list = unsafe {
+                self.dx.device.CreateCommandList(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    &allocator,
+                    None,
+                )
+            }
+            .unwrap();
+
+            Frame {
+                barriers: SmallVec::new(),
+                command_list,
+                command_allocator: allocator,
+            }
+        })
+    }
+
+    fn submit_frame(&mut self, frame: Frame) -> u64 {
+        let mut graphics = self.graphics_queue.borrow_mut();
+
+        let fence_value = graphics.submit(&frame.command_list);
+
+        self.frames_in_flight
+            .push_back(FrameInFlight { frame, fence_value });
+
+        fence_value
+    }
+
+    fn reclaim_completed_frames(&mut self) {
+        let graphics_queue = self.graphics_queue.borrow();
+
+        let mut i = 0;
+        for frame in &self.frames_in_flight {
+            if graphics_queue.is_complete(frame.fence_value) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        for FrameInFlight { mut frame, .. } in self.frames_in_flight.drain(..i) {
+            for mut barrier in frame.barriers.drain(..) {
+                if barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
+                    unsafe { std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition) };
+                }
+            }
+
+            unsafe {
+                frame.command_allocator.Reset().unwrap();
+                frame
+                    .command_list
+                    .Reset(&frame.command_allocator, None)
+                    .unwrap();
+                self.unused_frames.push(frame);
+            }
+        }
     }
 }
 
