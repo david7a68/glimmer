@@ -10,11 +10,11 @@ pub enum Error {
 pub struct FrameAllocator<'a> {
     bytes_allocated_at_start: u64,
     bytes_allocated: u64,
-    allocator: &'a mut TempAllocator,
+    allocator: &'a mut Allocator,
 }
 
 impl<'a> FrameAllocator<'a> {
-    pub fn new(allocator: &'a mut TempAllocator) -> Self {
+    pub fn new(allocator: &'a mut Allocator) -> Self {
         Self {
             bytes_allocated_at_start: allocator.bytes_allocated,
             bytes_allocated: allocator.bytes_allocated,
@@ -117,17 +117,17 @@ impl PartialOrd for FrameMarker {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Allocation {
-    size: u64,
-    offset: u64,
+    pub size: u64,
+    pub offset: u64,
 }
 
-pub struct TempAllocator {
+pub struct Allocator {
     capacity: u64,
     bytes_freed: u64,
     bytes_allocated: u64,
 }
 
-impl TempAllocator {
+impl Allocator {
     pub fn new(capacity: u64) -> Self {
         Self {
             capacity,
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test() {
-        let mut allocator = TempAllocator::new(100);
+        let mut allocator = Allocator::new(100);
 
         let m0 = {
             let mut frame = allocator.begin_frame();

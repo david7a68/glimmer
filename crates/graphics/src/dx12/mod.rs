@@ -14,7 +14,7 @@ use windows::{
     },
 };
 
-use crate::{render_graph::RenderGraph, GraphicsConfig};
+use crate::{render_graph::RenderGraph, GraphicsConfig, Vertex};
 
 mod dx;
 mod graphics;
@@ -22,6 +22,8 @@ mod surface;
 mod temp_allocator;
 
 pub use surface::{Surface, SurfaceImage};
+
+use self::temp_allocator::FrameMarker;
 
 struct Frame {
     barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
@@ -31,7 +33,7 @@ struct Frame {
 
 struct FrameInFlight {
     frame: Frame,
-    // frame_marker: FrameMarker,
+    frame_marker: FrameMarker,
     fence_value: u64,
 }
 
@@ -39,11 +41,18 @@ pub struct GraphicsContext {
     dx: Rc<dx::Interfaces>,
     graphics_queue: Rc<RefCell<graphics::Queue>>,
     ui_shader: UiShader,
+
+    upload_ptr: *mut std::ffi::c_void,
+    upload_buffer: ID3D12Resource,
+    upload_allocator: temp_allocator::Allocator,
+
     unused_frames: Vec<Frame>,
     frames_in_flight: VecDeque<FrameInFlight>,
 }
 
 impl GraphicsContext {
+    const UPLOAD_BUFFER_SIZE: u64 = 1024;
+
     pub fn new(config: &GraphicsConfig) -> Self {
         let dx = dx::Interfaces::new(config);
 
@@ -51,10 +60,60 @@ impl GraphicsContext {
 
         let ui_shader = UiShader::new(&dx);
 
+        // create upload buffer
+        let upload_buffer: ID3D12Resource = unsafe {
+            let mut buffer = None;
+            dx.device
+                .CreateCommittedResource(
+                    &D3D12_HEAP_PROPERTIES {
+                        Type: D3D12_HEAP_TYPE_UPLOAD,
+                        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+                        CreationNodeMask: 0,
+                        VisibleNodeMask: 0,
+                    },
+                    D3D12_HEAP_FLAG_NONE, // set automatically by CreateCommitedResource
+                    &D3D12_RESOURCE_DESC {
+                        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                        Alignment: 0, // default: 64k
+                        Width: Self::UPLOAD_BUFFER_SIZE,
+                        Height: 1,
+                        DepthOrArraySize: 1,
+                        MipLevels: 1,
+                        Format: DXGI_FORMAT_UNKNOWN,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
+                        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                        Flags: D3D12_RESOURCE_FLAG_NONE,
+                    },
+                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                    None,
+                    &mut buffer,
+                )
+                .unwrap();
+            buffer.unwrap()
+        };
+
+        let upload_ptr = unsafe {
+            // persistently mapped pointer
+            let mut ptr = std::ptr::null_mut();
+            upload_buffer
+                .Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut ptr))
+                .unwrap();
+            ptr
+        };
+
+        let upload_allocator = temp_allocator::Allocator::new(Self::UPLOAD_BUFFER_SIZE);
+
         Self {
             dx: Rc::new(dx),
             graphics_queue: Rc::new(RefCell::new(graphics_queue)),
             ui_shader,
+            upload_ptr,
+            upload_buffer,
+            upload_allocator,
             unused_frames: Vec::new(),
             frames_in_flight: VecDeque::new(),
         }
@@ -71,8 +130,44 @@ impl GraphicsContext {
         }
     }
 
-    pub fn draw(&mut self, target: &Image, _content: &RenderGraph) {
+    pub fn draw(&mut self, target: &Image, content: &RenderGraph) {
         let frame = self.begin_frame();
+
+        let frame_marker = {
+            let mut frame_alloc = self.upload_allocator.begin_frame();
+
+            let vertex_memory = frame_alloc
+                .allocate(
+                    (content.imm_vertices.len() * std::mem::size_of::<Vertex>()) as u64,
+                    std::mem::align_of::<Vertex>() as u64,
+                )
+                .expect("temporary memory allocation failed, todo: handle this gracefully");
+
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    self.upload_ptr.add(vertex_memory.offset as usize).cast(),
+                    content.imm_vertices.len(),
+                )
+                .copy_from_slice(&content.imm_vertices);
+            }
+
+            let index_memory = frame_alloc
+                .allocate(
+                    (content.imm_indices.len() * std::mem::size_of::<u16>()) as u64,
+                    std::mem::align_of::<u16>() as u64,
+                )
+                .expect("temporary memory allocation failed, todo: handle this gracefully");
+
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    self.upload_ptr.add(index_memory.offset as usize).cast(),
+                    content.imm_indices.len(),
+                )
+                .copy_from_slice(&content.imm_indices);
+            }
+
+            frame_alloc.finish()
+        };
 
         unsafe {
             frame.command_list.ResourceBarrier(&[transition_barrier(
@@ -100,7 +195,7 @@ impl GraphicsContext {
             )]);
         }
 
-        let fence_value = self.submit_frame(frame);
+        let fence_value = self.submit_frame(frame, frame_marker);
         target.last_use.set(fence_value);
     }
 
@@ -133,13 +228,16 @@ impl GraphicsContext {
         })
     }
 
-    fn submit_frame(&mut self, frame: Frame) -> u64 {
+    fn submit_frame(&mut self, frame: Frame, frame_marker: FrameMarker) -> u64 {
         let mut graphics = self.graphics_queue.borrow_mut();
 
         let fence_value = graphics.submit(&frame.command_list);
 
-        self.frames_in_flight
-            .push_back(FrameInFlight { frame, fence_value });
+        self.frames_in_flight.push_back(FrameInFlight {
+            frame,
+            fence_value,
+            frame_marker,
+        });
 
         fence_value
     }
@@ -156,12 +254,19 @@ impl GraphicsContext {
             }
         }
 
-        for FrameInFlight { mut frame, .. } in self.frames_in_flight.drain(..i) {
+        for FrameInFlight {
+            mut frame,
+            frame_marker,
+            ..
+        } in self.frames_in_flight.drain(..i)
+        {
             for mut barrier in frame.barriers.drain(..) {
                 if barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
                     unsafe { std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition) };
                 }
             }
+
+            self.upload_allocator.free_frame(frame_marker);
 
             unsafe {
                 frame.command_allocator.Reset().unwrap();
