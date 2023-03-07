@@ -10,7 +10,7 @@ use windows::{
     core::{Interface, PCSTR},
     w,
     Win32::{
-        Foundation::{GetLastError, HANDLE, HWND},
+        Foundation::{CloseHandle, GetLastError, HANDLE, HWND},
         Graphics::{
             Direct3D::D3D_FEATURE_LEVEL_12_0,
             Direct3D12::{
@@ -86,23 +86,20 @@ impl GraphicsContext {
         let allocator = graphics.get_command_allocator(&self.dx);
         let command_list = graphics.get_command_list(&self.dx, &allocator);
 
-        let barriers = [
-            transition_barrier(
-                &target.resource,
-                D3D12_RESOURCE_STATE_PRESENT,
-                D3D12_RESOURCE_STATE_RENDER_TARGET,
-            ),
-            transition_barrier(
-                &target.resource,
-                D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_PRESENT,
-            ),
-        ];
-
         unsafe {
-            command_list.ResourceBarrier(&barriers[..1]);
+            command_list.ResourceBarrier(&[transition_barrier(
+                &target.resource,
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+            )]);
+
             command_list.ClearRenderTargetView(target.rtv, [0.5, 0.5, 0.5, 1.0].as_ptr(), &[]);
-            command_list.ResourceBarrier(&barriers[1..]);
+
+            command_list.ResourceBarrier(&[transition_barrier(
+                &target.resource,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT,
+            )]);
         }
 
         let fence_value = graphics.submit(allocator, &[command_list], SmallVec::default());
@@ -119,10 +116,10 @@ impl Drop for GraphicsContext {
 /// A `Surface` controls the acquisition and presentation of images to its
 /// associated window.
 pub struct Surface {
-    // Use swapchain3 for color space support
     dx: Rc<Interfaces>,
     graphics_queue: Rc<RefCell<GraphicsQueue>>,
     flags: DXGI_SWAP_CHAIN_FLAG,
+    // Use swapchain3 for color space support
     swapchain: IDXGISwapChain3,
     image_index: u32,
     frame_counter: Cell<u64>,
@@ -304,6 +301,7 @@ impl Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         self.graphics_queue.borrow_mut().flush();
+        unsafe { CloseHandle(self.waitable_object) }.ok().unwrap();
     }
 }
 

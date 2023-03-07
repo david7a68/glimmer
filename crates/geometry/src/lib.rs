@@ -274,6 +274,12 @@ impl<T: Default, Unit> Default for Extent<T, Unit> {
     }
 }
 
+impl<T: PartialEq, Unit> PartialEq for Extent<T, Unit> {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width && self.height == other.height
+    }
+}
+
 #[repr(C)]
 pub struct Rect<T, Unit = UndefinedUnit> {
     pub p0: Point<T, Unit>,
