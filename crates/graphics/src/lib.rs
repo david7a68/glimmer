@@ -81,6 +81,9 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Retrieves the next image from the surface's swapchain.
+    ///
+    /// This fucntion will block until the next image is available.
     pub fn get_next_image(&mut self) -> SurfaceImage {
         SurfaceImage {
             inner: self.inner.get_next_image(),
@@ -97,6 +100,7 @@ pub struct SurfaceImage<'a> {
 }
 
 impl<'a> SurfaceImage<'a> {
+    /// Presents the swapchain image to the surface.
     pub fn present(self) {
         self.inner.present()
     }

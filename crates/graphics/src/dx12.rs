@@ -2,7 +2,7 @@ use raw_window_handle::RawWindowHandle;
 use windows::{
     core::Interface,
     Win32::{
-        Foundation::{BOOL, HANDLE, HWND},
+        Foundation::{HANDLE, HWND},
         Graphics::{
             Direct3D::D3D_FEATURE_LEVEL_12_0,
             Direct3D12::{
@@ -19,13 +19,11 @@ use windows::{
                     DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory2, IDXGIAdapter, IDXGIFactory6, IDXGISwapChain3,
-                DXGI_CREATE_FACTORY_DEBUG, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
-                DXGI_GPU_PREFERENCE_UNSPECIFIED, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT_ALLOW_TEARING,
-                DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-                DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
-                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                DXGI_CREATE_FACTORY_DEBUG, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_GPU_PREFERENCE_UNSPECIFIED,
+                DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+                DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
             },
         },
         System::Threading::{CreateEventW, WaitForSingleObjectEx},
@@ -90,16 +88,6 @@ impl Drop for GraphicsContext {
     }
 }
 
-/*
-Notes on DXGI surfaces:
-
- - May need to set the DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING for displays with
-   variable refresh rates.
- - To optimize scrolling, it might make sense to use the
-   DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL swap effect. Would need a lot of additional
-   infrastructure to support this though.
-*/
-
 /// A `Surface` controls the acquisition and presentation of images to its
 /// associated window.
 pub struct Surface {
@@ -112,22 +100,17 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Double-buffered swapchain.
     const BUFFER_COUNT: u32 = 2;
+    // Default swapchain format. Windows will clamp the format to the 0-1 range
+    // on SDR displays.
     const FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
     fn new(dx: &Interfaces, queue: &ID3D12CommandQueue, window: HWND) -> Self {
         // Setting this flag lets us limit the number of frames in the present
         // queue. If the application renders faster than the display can present
         // them, the application will block until the display catches up.
-        let mut flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-
-        if dx.allows_tearing {
-            // Try to support tearing if the display supports it. This is to
-            // allow the use of displays with variable-refresh-rate (VRR). In
-            // doing so, it is important to perform frame pacing with another
-            // method.
-            flags.0 |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0;
-        }
+        let flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
         let swapchain: IDXGISwapChain3 = unsafe {
             dx.gi.CreateSwapChainForHwnd(
@@ -149,8 +132,13 @@ impl Surface {
                     // Note: DXGI_SCALING_NONE is not supported on Windows 7.
                     // May want to adjust accordingly.
                     Scaling: DXGI_SCALING_NONE,
-                    // Note: Discard the back buffer contents after presenting.
+                    // Note: DISCARD has higher performance than SEQUENTIAL,
+                    // since the DWM can overwrite parts of the image with
+                    // overlapped windows instead of copying it into its own
+                    // memory. However, it may make sense to use SEQUENTIAL if
+                    // partial swapchain updates are needed.
                     SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                    // We don't care about transparent windows at the moment.
                     AlphaMode: DXGI_ALPHA_MODE_IGNORE,
                     Flags: flags.0 as u32,
                 },
@@ -224,8 +212,13 @@ impl Surface {
         .unwrap();
     }
 
+    /// Retrieves the next image in the swap chain.
+    ///
+    /// This function will block until the next image is available.
     pub fn get_next_image(&mut self) -> SurfaceImage {
+        // block until the next image is available
         unsafe { WaitForSingleObjectEx(self.waitable_object, u32::MAX, false) };
+
         self.image_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() };
         SurfaceImage { surface: self }
     }
@@ -236,24 +229,19 @@ pub struct SurfaceImage<'a> {
 }
 
 impl SurfaceImage<'_> {
+    /// Presents the image to the surface.
     pub fn present(self) {
         // must check if the window is in windowed mode
 
-        let present_flags = if (self.surface.flags.0 & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0) != 0 {
-            DXGI_PRESENT_ALLOW_TEARING
-        } else {
-            0
-        };
-
-        // Present interval must be 0 (present immediately) for tearing to work
-        unsafe { self.surface.swapchain.Present(0, present_flags) }.unwrap();
+        // We assume that the window is not typically in borderless fullscreen,
+        // and so use a presentation interval of 1 (VSync).
+        unsafe { self.surface.swapchain.Present(1, 0) }.unwrap();
     }
 }
 
 struct Interfaces {
     gi: IDXGIFactory6,
     device: ID3D12Device,
-    allows_tearing: bool,
 }
 
 impl Interfaces {
@@ -267,19 +255,6 @@ impl Interfaces {
             };
 
             unsafe { CreateDXGIFactory2(flags) }.unwrap()
-        };
-
-        let allows_tearing = {
-            let mut value: BOOL = BOOL::default();
-            unsafe {
-                gi.CheckFeatureSupport(
-                    DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-                    &mut value as *mut BOOL as *mut _,
-                    std::mem::size_of::<BOOL>() as u32,
-                )
-            }
-            .unwrap();
-            value.into()
         };
 
         let power_preference = match config.power_preference {
@@ -304,7 +279,6 @@ impl Interfaces {
         Self {
             gi,
             device: device.unwrap(),
-            allows_tearing,
         }
     }
 }

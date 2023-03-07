@@ -5,8 +5,6 @@ use shell::{
 };
 
 fn main() {
-    let f = "hi";
-
     let main_window = WindowDesc {
         title: "Sandbox",
         size: Extent::new(1280, 720),
@@ -14,10 +12,7 @@ fn main() {
         max_size: None,
         position: None,
         flags: WindowFlags::VISIBLE | WindowFlags::RESIZABLE,
-        handler: &mut |window| {
-            println!("{}", f);
-            AppWindow::new(window)
-        },
+        handler: &mut AppWindow::new,
     };
 
     shell::run([main_window]);
@@ -49,7 +44,7 @@ impl WindowHandler for AppWindow {
 
     fn on_mouse_button(
         &mut self,
-        control: &mut dyn WindowSpawner<Self>,
+        _control: &mut dyn WindowSpawner<Self>,
         button: MouseButton,
         state: ButtonState,
         _at: Point<i32, ScreenSpace>,
@@ -63,19 +58,7 @@ impl WindowHandler for AppWindow {
                 }
             }
             MouseButton::Middle => {}
-            MouseButton::Right => {
-                if ButtonState::Released == state {
-                    control.spawn(WindowDesc {
-                        title: "Sandbox-Child",
-                        size: Extent::new(1280, 720),
-                        min_size: None,
-                        max_size: None,
-                        position: None,
-                        flags: WindowFlags::VISIBLE | WindowFlags::RESIZABLE,
-                        handler: &mut AppWindow::new,
-                    });
-                }
-            }
+            MouseButton::Right => {}
             MouseButton::Other(_) => {}
         }
     }
