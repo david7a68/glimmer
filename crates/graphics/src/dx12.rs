@@ -78,27 +78,33 @@ impl GraphicsContext {
 
     pub fn draw(&mut self, target: &Image, _content: &RenderGraph) {
         let mut graphics = self.graphics_queue.borrow_mut();
+        graphics.release_completed_submissions();
 
         let allocator = graphics.get_command_allocator(&self.dx);
         let command_list = graphics.get_command_list(&self.dx, &allocator);
 
-        unsafe {
-            command_list.ResourceBarrier(&[transition_barrier(
+        let barriers = [
+            transition_barrier(
                 &target.resource,
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
-            )]);
+            ),
+            transition_barrier(
+                &target.resource,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT,
+            ),
+        ];
+
+        unsafe {
+            command_list.ResourceBarrier(&barriers[..1]);
 
             command_list.ClearRenderTargetView(target.rtv, [0.5, 0.5, 0.5, 1.0].as_ptr(), &[]);
 
-            command_list.ResourceBarrier(&[transition_barrier(
-                &target.resource,
-                D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_PRESENT,
-            )]);
+            command_list.ResourceBarrier(&barriers[1..]);
         }
 
-        let fence_value = graphics.submit(allocator, &[command_list]);
+        let fence_value = graphics.submit(allocator, &[command_list], &barriers);
         target.last_use.set(fence_value);
     }
 }
@@ -205,15 +211,15 @@ impl Surface {
 
     pub fn resize(&mut self) {
         // make sure that the render targets aren't currently in use
-        let graphics_queue = self.graphics_queue.borrow();
-        graphics_queue.wait_until(self.render_targets[0].as_ref().unwrap().last_use.get());
-        graphics_queue.wait_until(self.render_targets[1].as_ref().unwrap().last_use.get());
+        let mut graphics_queue = self.graphics_queue.borrow_mut();
 
-        // destroy the old render targets
         {
-            let _ = self.render_targets[0].take();
-            let _ = self.render_targets[1].take();
+            let a = self.render_targets[0].take().unwrap();
+            let b = self.render_targets[1].take().unwrap();
+            graphics_queue.wait_until(a.last_use.get().max(b.last_use.get()));
         }
+
+        graphics_queue.release_completed_submissions();
 
         unsafe {
             self.swapchain.ResizeBuffers(
@@ -403,6 +409,7 @@ struct GraphicsQueue {
     event: HANDLE,
     last_value: Cell<u64>,
     next_value: u64,
+    allocators: Vec<ID3D12CommandAllocator>,
     command_lists: Vec<ID3D12GraphicsCommandList>,
     submissions: VecDeque<Submission>,
 }
@@ -439,6 +446,7 @@ impl GraphicsQueue {
             last_value: Cell::new(last_value),
             next_value,
             command_lists: vec![],
+            allocators: vec![],
             submissions: VecDeque::with_capacity(1),
         }
     }
@@ -460,6 +468,10 @@ impl GraphicsQueue {
         fence_value <= self.last_value.get()
     }
 
+    fn wait_idle(&self) {
+        self.wait_until(self.next_value - 1);
+    }
+
     fn wait_until(&self, fence_value: u64) {
         if !self.is_complete(fence_value) {
             unsafe {
@@ -472,30 +484,48 @@ impl GraphicsQueue {
         }
     }
 
-    fn wait_idle(&self) {
-        unsafe {
-            self.fence
-                .SetEventOnCompletion(self.next_value - 1, self.event)
-                .unwrap();
-            WaitForSingleObjectEx(self.event, u32::MAX, false);
+    fn release_completed_submissions(&mut self) {
+        let mut i = 0;
+        for submission in &self.submissions {
+            if self.is_complete(submission.fence_value) {
+                i += 1;
+            } else {
+                break;
+            }
         }
-        self.last_value.set(self.next_value - 1);
+
+        for mut submission in self.submissions.drain(..i) {
+            for mut barrier in submission.barriers.drain(..) {
+                if barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
+                    unsafe { std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition) };
+                }
+            }
+
+            unsafe { submission.command_allocator.Reset() }.unwrap();
+            self.allocators.push(submission.command_allocator);
+        }
     }
 
     fn get_command_allocator(&mut self, dx: &Interfaces) -> ID3D12CommandAllocator {
-        let allocator = if let Some(submission) = self.submissions.pop_front() {
-            self.is_complete(submission.fence_value);
-            submission.command_allocator
+        if let Some(allocator) = self.allocators.pop() {
+            allocator
         } else {
-            unsafe {
-                dx.device
-                    .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
-            }
-            .unwrap()
-        };
+            // Tentatively prefer lower memory usage over lower latency here.
+            // Avoid creating a new allocator if we can at all avoid it. This is
+            // just intuition; actual performance testing is needed here.
+            let _ = self.poll_fence();
+            self.release_completed_submissions();
 
-        unsafe { allocator.Reset() }.unwrap();
-        allocator
+            if let Some(allocator) = self.allocators.pop() {
+                allocator
+            } else {
+                unsafe {
+                    dx.device
+                        .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+                }
+                .unwrap()
+            }
+        }
     }
 
     fn get_command_list(
@@ -519,6 +549,7 @@ impl GraphicsQueue {
         &mut self,
         allocator: ID3D12CommandAllocator,
         commands: &[ID3D12GraphicsCommandList],
+        barriers: &[D3D12_RESOURCE_BARRIER],
     ) -> u64 {
         unsafe {
             for command in commands {
@@ -542,6 +573,7 @@ impl GraphicsQueue {
         self.submissions.push_back(Submission {
             fence_value: self.next_value,
             command_allocator: allocator,
+            barriers: SmallVec::from_iter(barriers.iter().cloned()),
         });
 
         let fence_value = self.next_value;
@@ -553,6 +585,7 @@ impl GraphicsQueue {
 struct Submission {
     fence_value: u64,
     command_allocator: ID3D12CommandAllocator,
+    barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
 }
 
 fn transition_barrier(
