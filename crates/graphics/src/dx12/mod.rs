@@ -18,6 +18,7 @@ use crate::{render_graph::RenderGraph, GraphicsConfig};
 mod dx;
 mod graphics;
 mod surface;
+mod temp_allocator;
 
 pub use surface::{Surface, SurfaceImage};
 
@@ -69,6 +70,12 @@ impl GraphicsContext {
 
             command_list.ClearRenderTargetView(target.rtv, [0.5, 0.5, 0.5, 1.0].as_ptr(), &[]);
 
+            // record draw commands!
+
+            // upload render graph immediate geometry
+
+            // draw
+
             command_list.ResourceBarrier(&[transition_barrier(
                 &target.resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -103,9 +110,6 @@ fn transition_barrier(
         Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
         Anonymous: D3D12_RESOURCE_BARRIER_0 {
             Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                // Note (2022-12-21): This disagrees with the samples, and
-                // involves a clone that is destroyed immediately upon
-                // submission to a command list. IDK why this is the case.
                 pResource: windows::core::ManuallyDrop::new(resource),
                 StateBefore: state_before,
                 StateAfter: state_after,
