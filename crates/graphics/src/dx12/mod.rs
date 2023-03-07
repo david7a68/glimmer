@@ -1,10 +1,9 @@
 //! # DX12 backend
 
-use std::{cell::Cell, collections::VecDeque, ptr::NonNull};
+use std::{cell::Cell, ptr::NonNull};
 
 use geometry::{Extent, ScreenSpace};
 use raw_window_handle::RawWindowHandle;
-use smallvec::SmallVec;
 
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 #[allow(clippy::wildcard_imports)]
@@ -33,45 +32,13 @@ mod surface;
 
 pub use surface::{Surface, SurfaceImage};
 
-struct Frame {
-    barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
-    command_list: ID3D12GraphicsCommandList,
-    command_allocator: ID3D12CommandAllocator,
-}
-
-impl Frame {
-    fn new(dx: &dx::Interfaces) -> Self {
-        let allocator = unsafe {
-            dx.device
-                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
-        }
-        .unwrap();
-
-        let command_list: ID3D12GraphicsCommandList = unsafe {
-            dx.device
-                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
-        }
-        .unwrap();
-
-        Self {
-            barriers: SmallVec::new(),
-            command_list,
-            command_allocator: allocator,
-        }
-    }
-}
-
-struct FrameInFlight {
-    frame: Frame,
-    fence_value: u64,
-    alloc_marker: FrameMarker,
-}
+use self::queue::SubmissionId;
 
 pub struct GraphicsContext {
     dx: dx::Interfaces,
-    graphics_queue: queue::Graphics,
+    graphics_queue: queue::Graphics<FrameMarker>,
 
-    white_pixel: Option<Image>,
+    white_pixel: Image,
 
     polygon_shader: Shader<ShaderConstants>,
     round_rect_shader: Shader<ShaderConstants>,
@@ -80,9 +47,6 @@ pub struct GraphicsContext {
     upload_allocator: temp_allocator::Allocator,
 
     descriptor_heap: DescriptorHeap,
-
-    unused_frames: Vec<Frame>,
-    frames_in_flight: VecDeque<FrameInFlight>,
 }
 
 impl GraphicsContext {
@@ -92,7 +56,7 @@ impl GraphicsContext {
     pub fn new(config: &GraphicsConfig) -> Self {
         let dx = dx::Interfaces::new(config);
 
-        let graphics_queue = queue::Graphics::new(&dx);
+        let mut graphics_queue = queue::Graphics::new(&dx);
 
         let polygon_shader = create_polygon_shader(&dx);
         let round_rect_shader = create_rounded_rect_shader(&dx);
@@ -104,7 +68,7 @@ impl GraphicsContext {
             D3D12_RESOURCE_STATE_GENERIC_READ,
         );
 
-        let upload_allocator = {
+        let mut upload_allocator = {
             let mut ptr = std::ptr::null_mut();
             unsafe {
                 upload_buffer
@@ -115,31 +79,43 @@ impl GraphicsContext {
             temp_allocator::Allocator::new(Self::UPLOAD_BUFFER_SIZE, NonNull::new(ptr.cast()))
         };
 
-        let descriptor_heap = DescriptorHeap::new(
+        let mut descriptor_heap = DescriptorHeap::new(
             &dx,
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             Self::MAX_TEXTURES,
             true,
         );
 
+        let white_pixel = {
+            let (rec, _) = graphics_queue.record(&dx);
+            let mut mem = upload_allocator.begin_frame();
+            let pixel = create_white_pixel(
+                &dx,
+                &rec.commands,
+                &upload_buffer,
+                &mut mem,
+                &mut descriptor_heap,
+            );
+            graphics_queue.submit(rec, mem.finish());
+            pixel
+        };
+
         Self {
             dx,
             graphics_queue: graphics_queue,
-            white_pixel: None,
+            white_pixel,
             polygon_shader,
             round_rect_shader,
             upload_buffer,
             upload_allocator,
             descriptor_heap,
-            unused_frames: Vec::new(),
-            frames_in_flight: VecDeque::new(),
         }
     }
 
     pub fn create_surface(&self, window: RawWindowHandle) -> Surface {
         match window {
             RawWindowHandle::Win32(handle) => {
-                Surface::new(&self.dx, &self.graphics_queue, HWND(handle.hwnd as _))
+                Surface::new(&self.dx, &self.graphics_queue.queue, HWND(handle.hwnd as _))
             }
             _ => unimplemented!(),
         }
@@ -155,11 +131,17 @@ impl GraphicsContext {
     }
 
     pub fn resize(&self, surface: &mut Surface) {
-        surface.resize(&self.dx, &self.graphics_queue);
+        self.graphics_queue.flush();
+        surface.resize(&self.dx);
     }
 
     pub fn draw(&mut self, target: &Image, content: &RenderGraph) {
-        let frame = self.begin_frame();
+        let (rec, old_marker) = self.graphics_queue.record(&self.dx);
+
+        if let Some(old_marker) = old_marker {
+            self.upload_allocator.free_frame(old_marker);
+        }
+
         let mut frame_alloc = self.upload_allocator.begin_frame();
 
         let (imm_vertex_view, imm_index_view, imm_rect_view) = {
@@ -181,34 +163,20 @@ impl GraphicsContext {
             (vertex_view, index_view, rect_view)
         };
 
-        let _white_pixel = self.white_pixel.get_or_insert_with(|| {
-            create_white_pixel(
-                &self.dx,
-                &frame.command_list,
-                &self.upload_buffer,
-                &mut frame_alloc,
-                &mut self.descriptor_heap,
-            )
-        });
-
         let frame_marker = frame_alloc.finish();
 
         unsafe {
-            frame.command_list.ResourceBarrier(&[transition_barrier(
+            rec.commands.ResourceBarrier(&[transition_barrier(
                 &target.resource,
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             )]);
 
-            frame
-                .command_list
+            rec.commands
                 .OMSetRenderTargets(1, Some(&target.rtv.cpu), false, None);
 
-            frame.command_list.ClearRenderTargetView(
-                target.rtv.cpu,
-                [1.0, 1.0, 1.0, 1.0].as_ptr(),
-                &[],
-            );
+            rec.commands
+                .ClearRenderTargetView(target.rtv.cpu, [1.0, 1.0, 1.0, 1.0].as_ptr(), &[]);
 
             let target_desc = target.resource.GetDesc();
 
@@ -216,7 +184,7 @@ impl GraphicsContext {
                 viewport: Extent::new(target_desc.Width as u32, target_desc.Height),
             };
 
-            frame.command_list.RSSetViewports(&[D3D12_VIEWPORT {
+            rec.commands.RSSetViewports(&[D3D12_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
                 Width: constants.viewport.width as _,
@@ -225,7 +193,7 @@ impl GraphicsContext {
                 MaxDepth: 1.0,
             }]);
 
-            frame.command_list.RSSetScissorRects(&[RECT {
+            rec.commands.RSSetScissorRects(&[RECT {
                 left: 0,
                 top: 0,
                 right: constants.viewport.width.try_into().unwrap(),
@@ -234,7 +202,7 @@ impl GraphicsContext {
 
             let render_data = RenderData {
                 constants,
-                white_pixel: self.white_pixel.as_ref().unwrap(),
+                white_pixel: &self.white_pixel,
                 descriptor_heap: &self.descriptor_heap,
                 index_buffer: imm_index_view,
                 poly_vertex_buffer: imm_vertex_view,
@@ -242,13 +210,13 @@ impl GraphicsContext {
             };
 
             self.record_render_graph(
-                &frame.command_list,
+                &rec.commands,
                 content,
                 RenderGraphNodeId::root(),
                 &render_data,
             );
 
-            frame.command_list.ResourceBarrier(&[transition_barrier(
+            rec.commands.ResourceBarrier(&[transition_barrier(
                 &target.resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
@@ -259,59 +227,9 @@ impl GraphicsContext {
             self.dx.device.GetDeviceRemovedReason().unwrap();
         }
 
-        let fence_value = self.submit_frame(frame, frame_marker);
+        let fence_value = self.graphics_queue.submit(rec, frame_marker);
+
         target.last_use.set(fence_value);
-    }
-
-    fn begin_frame(&mut self) -> Frame {
-        let num_complete = self
-            .frames_in_flight
-            .iter()
-            .take_while(|frame| self.graphics_queue.is_complete(frame.fence_value))
-            .count();
-
-        for FrameInFlight {
-            mut frame,
-            alloc_marker: frame_marker,
-            ..
-        } in self.frames_in_flight.drain(..num_complete)
-        {
-            for mut barrier in frame.barriers.drain(..) {
-                match barrier.Type {
-                    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION => unsafe {
-                        std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition)
-                    },
-                    _ => unimplemented!(),
-                }
-            }
-
-            unsafe {
-                frame.command_allocator.Reset().unwrap();
-                frame
-                    .command_list
-                    .Reset(&frame.command_allocator, None)
-                    .unwrap();
-            }
-
-            self.upload_allocator.free_frame(frame_marker);
-            self.unused_frames.push(frame);
-        }
-
-        self.unused_frames
-            .pop()
-            .unwrap_or_else(|| Frame::new(&self.dx))
-    }
-
-    fn submit_frame(&mut self, frame: Frame, alloc_marker: FrameMarker) -> u64 {
-        let fence_value = self.graphics_queue.submit(&frame.command_list);
-
-        self.frames_in_flight.push_back(FrameInFlight {
-            frame,
-            fence_value,
-            alloc_marker,
-        });
-
-        fence_value
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -385,7 +303,7 @@ impl Drop for GraphicsContext {
 
 pub struct Image {
     resource: ID3D12Resource,
-    last_use: Cell<u64>,
+    last_use: Cell<SubmissionId>,
     rtv: Descriptor,
     srv: Descriptor,
 }
@@ -774,7 +692,7 @@ fn create_white_pixel(
 
     Image {
         resource,
-        last_use: Cell::new(0),
+        last_use: Cell::new(SubmissionId::default()),
         rtv: Descriptor::default(),
         srv,
     }

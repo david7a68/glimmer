@@ -14,11 +14,7 @@ use windows::{
     },
 };
 
-use super::{
-    dx,
-    queue::{self, Graphics},
-    Descriptor, DescriptorHeap, Image,
-};
+use super::{dx, queue::SubmissionId, Descriptor, DescriptorHeap, Image};
 
 /// A `Surface` controls the acquisition and presentation of images to its
 /// associated window.
@@ -39,7 +35,7 @@ impl Surface {
     // on SDR displays.
     const FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-    pub fn new(dx: &dx::Interfaces, queue: &queue::Graphics, window: HWND) -> Self {
+    pub fn new(dx: &dx::Interfaces, queue: &ID3D12CommandQueue, window: HWND) -> Self {
         // Setting this flag lets us limit the number of frames in the present
         // queue. If the application renders faster than the display can present
         // them, the application will block until the display catches up.
@@ -47,7 +43,7 @@ impl Surface {
 
         let swapchain: IDXGISwapChain3 = unsafe {
             dx.gi.CreateSwapChainForHwnd(
-                &queue.queue,
+                queue,
                 window,
                 &DXGI_SWAP_CHAIN_DESC1 {
                     Width: 0,  // automatically match the size of the window
@@ -111,10 +107,7 @@ impl Surface {
         self.waitable_object = HANDLE(0);
     }
 
-    pub fn resize(&mut self, dx: &dx::Interfaces, graphics: &Graphics) {
-        // make sure that the render targets aren't currently in use
-        graphics.flush();
-
+    pub fn resize(&mut self, dx: &dx::Interfaces) {
         for rt in self.render_targets.iter_mut() {
             self.rtv_heap.free(rt.take().unwrap().rtv);
         }
@@ -171,13 +164,13 @@ impl Surface {
             [
                 Image {
                     resource: buffer0,
-                    last_use: Cell::new(0),
+                    last_use: Cell::new(SubmissionId::default()),
                     rtv: rtv0,
                     srv: Descriptor::default(),
                 },
                 Image {
                     resource: buffer1,
-                    last_use: Cell::new(0),
+                    last_use: Cell::new(SubmissionId::default()),
                     rtv: rtv1,
                     srv: Descriptor::default(),
                 },

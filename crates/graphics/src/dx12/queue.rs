@@ -1,5 +1,6 @@
-use std::cell::Cell;
+use std::{cell::Cell, collections::VecDeque};
 
+use smallvec::SmallVec;
 #[allow(clippy::wildcard_imports)]
 use windows::{
     core::Interface,
@@ -13,15 +14,33 @@ use windows::{
 
 use super::dx;
 
-pub struct Graphics {
+#[derive(Clone, Copy, Default)]
+pub struct SubmissionId(u64);
+
+pub struct Recording {
+    pub commands: ID3D12GraphicsCommandList,
+    pub barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
+    pub allocator: ID3D12CommandAllocator,
+}
+
+struct Submission<T> {
+    data: T,
+    barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
+    allocator: ID3D12CommandAllocator,
+    fence_value: SubmissionId,
+}
+
+pub struct Graphics<T> {
     pub queue: ID3D12CommandQueue,
     fence: ID3D12Fence,
     event: HANDLE,
     last_value: Cell<u64>,
     next_value: Cell<u64>,
+    commands: Vec<ID3D12GraphicsCommandList>,
+    submissions: VecDeque<Submission<T>>,
 }
 
-impl Graphics {
+impl<T> Graphics<T> {
     pub fn new(dx: &dx::Interfaces) -> Self {
         let queue: ID3D12CommandQueue = unsafe {
             dx.device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
@@ -57,57 +76,121 @@ impl Graphics {
             event,
             last_value: Cell::new(last_value),
             next_value: Cell::new(next_value),
+            commands: Vec::new(),
+            submissions: VecDeque::new(),
         }
     }
 
-    pub fn poll_fence(&self) -> u64 {
+    pub fn poll_fence(&self) -> SubmissionId {
         self.last_value.set(
             self.last_value
                 .get()
                 .max(unsafe { self.fence.GetCompletedValue() }),
         );
-        self.last_value.get()
+        SubmissionId(self.last_value.get())
     }
 
-    pub fn is_complete(&self, fence_value: u64) -> bool {
-        if fence_value > self.last_value.get() {
+    pub fn is_complete(&self, fence_value: SubmissionId) -> bool {
+        if fence_value.0 > self.last_value.get() {
             self.poll_fence();
         }
 
-        fence_value <= self.last_value.get()
+        fence_value.0 <= self.last_value.get()
     }
 
     pub fn flush(&self) {
         let next_value = self.next_value.get();
         unsafe { self.queue.Signal(&self.fence, next_value).unwrap() };
-        self.wait_until(next_value);
+        self.wait_until(SubmissionId(next_value));
         self.next_value.set(next_value + 1);
     }
 
-    pub fn wait_until(&self, fence_value: u64) {
+    pub fn wait_until(&self, fence_value: SubmissionId) {
         if !self.is_complete(fence_value) {
             unsafe {
                 self.fence
-                    .SetEventOnCompletion(fence_value, self.event)
+                    .SetEventOnCompletion(fence_value.0, self.event)
                     .unwrap();
                 WaitForSingleObject(self.event, u32::MAX);
             }
-            self.last_value.set(fence_value);
+            self.last_value.set(fence_value.0);
         }
     }
 
-    pub fn submit(&mut self, commands: &ID3D12GraphicsCommandList) -> u64 {
+    pub fn record(&mut self, dx: &dx::Interfaces) -> (Recording, Option<T>) {
+        let (allocator, barriers, value) = match self.submissions.front() {
+            Some(submission) if self.is_complete(submission.fence_value) => {
+                let mut submission = self.submissions.pop_front().unwrap();
+                unsafe { submission.allocator.Reset().unwrap() };
+
+                for mut barrier in submission.barriers.drain(..) {
+                    match barrier.Type {
+                        D3D12_RESOURCE_BARRIER_TYPE_TRANSITION => unsafe {
+                            std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition);
+                        },
+                        _ => unimplemented!(),
+                    }
+                }
+
+                (
+                    submission.allocator,
+                    submission.barriers,
+                    Some(submission.data),
+                )
+            }
+            _ => {
+                let allocator = unsafe {
+                    dx.device
+                        .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+                        .unwrap()
+                };
+
+                (allocator, SmallVec::new(), None)
+            }
+        };
+
+        let commands = if let Some(commands) = self.commands.pop() {
+            unsafe { commands.Reset(&allocator, None) }.unwrap();
+            commands
+        } else {
+            unsafe {
+                dx.device
+                    .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
+                    .unwrap()
+            }
+        };
+
+        (
+            Recording {
+                commands,
+                barriers,
+                allocator,
+            },
+            value,
+        )
+    }
+
+    pub fn submit(&mut self, recording: Recording, value: T) -> SubmissionId {
         let next_value = self.next_value.get();
 
         unsafe {
-            commands.Close().unwrap();
-            let commands = commands.cast().unwrap();
+            recording.commands.Close().unwrap();
+            let commands = recording.commands.cast().unwrap();
             self.queue.ExecuteCommandLists(&[commands]);
             self.queue.Signal(&self.fence, next_value).unwrap();
         }
 
-        let fence_value = next_value;
         self.next_value.set(next_value + 1);
-        fence_value
+        let submission_id = SubmissionId(next_value);
+
+        self.commands.push(recording.commands);
+        self.submissions.push_back(Submission {
+            data: value,
+            barriers: recording.barriers,
+            allocator: recording.allocator,
+            fence_value: submission_id,
+        });
+
+        submission_id
     }
 }
