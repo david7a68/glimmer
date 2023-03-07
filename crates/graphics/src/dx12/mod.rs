@@ -23,13 +23,17 @@ use windows::{
 };
 
 use crate::{
+    memory::{
+        block_allocator::BlockAllocator,
+        temp_allocator::{self, FrameMarker},
+        HeapOffset,
+    },
     render_graph::{RenderGraph, RenderGraphCommand},
-    temp_allocator::{self, FrameMarker},
     GraphicsConfig, RenderGraphNodeId, RoundedRectVertex, Vertex,
 };
 
 mod dx;
-mod graphics;
+mod queue;
 mod surface;
 
 pub use surface::{Surface, SurfaceImage};
@@ -70,9 +74,9 @@ struct FrameInFlight {
 
 pub struct GraphicsContext {
     dx: Rc<dx::Interfaces>,
-    graphics_queue: Rc<RefCell<graphics::Queue>>,
+    graphics_queue: Rc<RefCell<queue::Graphics>>,
 
-    white_pixel: Option<ID3D12Resource>,
+    white_pixel: Option<Image>,
 
     polygon_shader: Shader<ShaderConstants>,
     round_rect_shader: Shader<ShaderConstants>,
@@ -80,69 +84,62 @@ pub struct GraphicsContext {
     upload_buffer: ID3D12Resource,
     upload_allocator: temp_allocator::Allocator,
 
+    descriptor_heap: ID3D12DescriptorHeap,
+    descriptor_allocator: BlockAllocator<{ Self::MAX_TEXTURES as usize }>,
+
     unused_frames: Vec<Frame>,
     frames_in_flight: VecDeque<FrameInFlight>,
 }
 
 impl GraphicsContext {
-    const UPLOAD_BUFFER_SIZE: u64 = 1024;
+    const UPLOAD_BUFFER_SIZE: u64 = 1024 * 1024;
+    const MAX_TEXTURES: u32 = 1024;
 
     pub fn new(config: &GraphicsConfig) -> Self {
         let dx = dx::Interfaces::new(config);
 
-        let graphics_queue = graphics::Queue::new(&dx);
+        let graphics_queue = queue::Graphics::new(&dx);
 
         let polygon_shader = create_polygon_shader(&dx);
         let round_rect_shader = create_rounded_rect_shader(&dx);
 
-        // create upload buffer
-        let upload_buffer: ID3D12Resource = unsafe {
-            let mut buffer = None;
-            dx.device
-                .CreateCommittedResource(
-                    &D3D12_HEAP_PROPERTIES {
-                        Type: D3D12_HEAP_TYPE_UPLOAD,
-                        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-                        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-                        CreationNodeMask: 0,
-                        VisibleNodeMask: 0,
-                    },
-                    D3D12_HEAP_FLAG_NONE, // set automatically by CreateCommitedResource
-                    &D3D12_RESOURCE_DESC {
-                        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                        Alignment: 0, // default: 64k
-                        Width: Self::UPLOAD_BUFFER_SIZE,
-                        Height: 1,
-                        DepthOrArraySize: 1,
-                        MipLevels: 1,
-                        Format: DXGI_FORMAT_UNKNOWN,
-                        SampleDesc: DXGI_SAMPLE_DESC {
-                            Count: 1,
-                            Quality: 0,
-                        },
-                        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                        Flags: D3D12_RESOURCE_FLAG_NONE,
-                    },
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                    None,
-                    &mut buffer,
-                )
-                .unwrap();
-            buffer.unwrap()
-        };
-
-        let upload_ptr = unsafe {
-            let mut ptr = std::ptr::null_mut();
-            upload_buffer
-                .Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut ptr))
-                .unwrap();
-            ptr
-        };
-
-        let upload_allocator = temp_allocator::Allocator::new(
+        let upload_buffer = create_buffer(
+            &dx,
+            D3D12_HEAP_TYPE_UPLOAD,
             Self::UPLOAD_BUFFER_SIZE,
-            NonNull::new(upload_ptr.cast()),
+            D3D12_RESOURCE_STATE_GENERIC_READ,
         );
+
+        let upload_allocator = {
+            let mut ptr = std::ptr::null_mut();
+            unsafe {
+                upload_buffer
+                    .Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut ptr))
+                    .unwrap();
+            };
+
+            temp_allocator::Allocator::new(Self::UPLOAD_BUFFER_SIZE, NonNull::new(ptr.cast()))
+        };
+
+        let descriptor_heap = {
+            let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                NumDescriptors: Self::MAX_TEXTURES,
+                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                NodeMask: 0,
+            };
+
+            unsafe { dx.device.CreateDescriptorHeap(&heap_desc) }.unwrap()
+        };
+
+        let descriptor_allocator = {
+            let descriptor_size = unsafe {
+                dx.device
+                    .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+            } as u64;
+
+            BlockAllocator::<{ Self::MAX_TEXTURES as usize }>::new(HeapOffset(descriptor_size))
+        };
 
         Self {
             dx: Rc::new(dx),
@@ -152,6 +149,8 @@ impl GraphicsContext {
             round_rect_shader,
             upload_buffer,
             upload_allocator,
+            descriptor_heap,
+            descriptor_allocator,
             unused_frames: Vec::new(),
             frames_in_flight: VecDeque::new(),
         }
@@ -192,12 +191,49 @@ impl GraphicsContext {
         };
 
         let _white_pixel = self.white_pixel.get_or_insert_with(|| {
-            create_white_pixel(
+            let resource = create_white_pixel(
                 &self.dx,
                 &frame.command_list,
                 &self.upload_buffer,
                 &mut frame_alloc,
-            )
+            );
+
+            let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_R8G8B8A8_UINT,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                        PlaneSlice: 0,
+                        ResourceMinLODClamp: 0.0,
+                    },
+                },
+            };
+
+            let srv_offset = self.descriptor_allocator.allocate().unwrap();
+
+            let srv = unsafe {
+                let srv = D3D12_CPU_DESCRIPTOR_HANDLE {
+                    ptr: self
+                        .descriptor_heap
+                        .GetCPUDescriptorHandleForHeapStart()
+                        .ptr
+                        + srv_offset.0 as usize,
+                };
+                self.dx
+                    .device
+                    .CreateShaderResourceView(&resource, Some(&desc), srv);
+                srv
+            };
+
+            Image {
+                resource,
+                last_use: Cell::new(0),
+                rtv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+                srv,
+            }
         });
 
         let frame_marker = frame_alloc.finish();
@@ -394,6 +430,7 @@ pub struct Image {
     resource: ID3D12Resource,
     last_use: Cell<u64>,
     rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    srv: D3D12_CPU_DESCRIPTOR_HANDLE,
 }
 
 fn transition_barrier(
@@ -596,6 +633,47 @@ impl<Constants: PushConstants> Shader<Constants> {
             constants.write(command_list);
         }
     }
+}
+
+fn create_buffer(
+    dx: &dx::Interfaces,
+    heap: D3D12_HEAP_TYPE,
+    size: u64,
+    initial_state: D3D12_RESOURCE_STATES,
+) -> ID3D12Resource {
+    let mut buffer = None;
+    unsafe {
+        dx.device.CreateCommittedResource(
+            &D3D12_HEAP_PROPERTIES {
+                Type: heap,
+                CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+                CreationNodeMask: 0,
+                VisibleNodeMask: 0,
+            },
+            D3D12_HEAP_FLAG_NONE, // set automatically by CreateCommitedResource
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                Alignment: 0, // default: 64k
+                Width: size,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                Format: DXGI_FORMAT_UNKNOWN,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                Flags: D3D12_RESOURCE_FLAG_NONE,
+            },
+            initial_state,
+            None,
+            &mut buffer,
+        )
+    }
+    .unwrap();
+    buffer.unwrap()
 }
 
 fn vertex_input(

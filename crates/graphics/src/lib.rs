@@ -41,8 +41,9 @@ use std::cell::RefCell;
 use geometry::{Extent, Point};
 use raw_window_handle::HasRawWindowHandle;
 
+mod memory;
+mod pixel_buffer;
 mod render_graph;
-mod temp_allocator;
 
 #[cfg(target_os = "windows")]
 mod dx12;
@@ -95,10 +96,14 @@ impl Color {
     }
 }
 
+/// Assume that most polygons that are drawn will involve images (as in text).
+/// If that is the case, it is reasonable to only support polygons with texture
+/// coordinates, and use a dummy texture for polygons with only vertex colors.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Vertex {
     pub position: Point<f32>,
+    pub uv: Point<f32>,
     pub color: Color,
 }
 

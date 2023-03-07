@@ -13,7 +13,7 @@ use windows::{
 
 use super::dx;
 
-pub struct Queue {
+pub struct Graphics {
     pub queue: ID3D12CommandQueue,
     fence: ID3D12Fence,
     event: HANDLE,
@@ -21,7 +21,7 @@ pub struct Queue {
     next_value: u64,
 }
 
-impl Queue {
+impl Graphics {
     pub fn new(dx: &dx::Interfaces) -> Self {
         let queue: ID3D12CommandQueue = unsafe {
             dx.device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {

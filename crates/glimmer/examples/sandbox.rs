@@ -138,11 +138,12 @@ impl WindowHandler for AppWindow {
 
         let mut render_graph = RenderGraph::new();
 
-        render_graph.draw_immediate(
+        render_graph.draw_polygon(
             RenderGraphNodeId::root(),
             &[
                 Vertex {
                     position: Point::new(0.0, 0.0),
+                    uv: Point::zero(),
                     color: Color::RED,
                 },
                 Vertex {
@@ -150,10 +151,12 @@ impl WindowHandler for AppWindow {
                         self.window.extent().width as f32,
                         self.window.extent().height as f32,
                     ),
+                    uv: Point::zero(),
                     color: Color::GREEN,
                 },
                 Vertex {
                     position: Point::new(0.0, self.window.extent().height as f32),
+                    uv: Point::zero(),
                     color: Color::BLUE,
                 },
             ],
@@ -163,7 +166,7 @@ impl WindowHandler for AppWindow {
         render_graph.draw_rect(
             RenderGraphNodeId::root(),
             Rect::new(Point::new(800.0, 100.0), Point::new(1000.0, 300.0)),
-            [Color::GREEN; 4],
+            [Color::RED, Color::GREEN, Color::BLUE, Color::BLACK],
             Some([20.0, 0.0, 300.0, 300.0]),
         );
 

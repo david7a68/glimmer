@@ -1,15 +1,6 @@
 use std::ptr::NonNull;
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Error {
-    /// The heap does not have enough free memory to satisfy the allocation
-    /// request.
-    OutOfMemory,
-    /// The heap is not large enough to satisfy the allocation request.
-    InsufficientCapacity,
-    /// The allocator does not have a access to the heap.
-    NoHeap,
-}
+use super::Error;
 
 pub struct FrameAllocator<'a> {
     bytes_allocated_at_start: u64,

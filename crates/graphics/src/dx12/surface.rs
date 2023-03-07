@@ -17,13 +17,13 @@ use windows::{
     },
 };
 
-use super::{dx, graphics, Image};
+use super::{dx, queue, Image};
 
 /// A `Surface` controls the acquisition and presentation of images to its
 /// associated window.
 pub struct Surface {
     dx: Rc<dx::Interfaces>,
-    graphics_queue: Rc<RefCell<graphics::Queue>>,
+    graphics_queue: Rc<RefCell<queue::Graphics>>,
     flags: DXGI_SWAP_CHAIN_FLAG,
     // Use swapchain3 for color space support
     swapchain: IDXGISwapChain3,
@@ -41,7 +41,7 @@ impl Surface {
     // on SDR displays.
     const FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-    pub fn new(dx: Rc<dx::Interfaces>, queue: Rc<RefCell<graphics::Queue>>, window: HWND) -> Self {
+    pub fn new(dx: Rc<dx::Interfaces>, queue: Rc<RefCell<queue::Graphics>>, window: HWND) -> Self {
         // Setting this flag lets us limit the number of frames in the present
         // queue. If the application renders faster than the display can present
         // them, the application will block until the display catches up.
@@ -193,11 +193,13 @@ impl Surface {
                     resource: buffer0,
                     last_use: Cell::new(0),
                     rtv: rtv0,
+                    srv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
                 },
                 Image {
                     resource: buffer1,
                     last_use: Cell::new(0),
                     rtv: rtv1,
+                    srv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
                 },
             ]
         }

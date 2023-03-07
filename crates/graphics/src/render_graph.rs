@@ -102,7 +102,7 @@ impl RenderGraph {
     /// ## Panics
     ///
     /// May panic if the number of vertices exceeds `u16::MAX`.
-    pub fn draw_immediate(
+    pub fn draw_polygon(
         &mut self,
         parent: RenderGraphNodeId,
         vertices: &[Vertex],
