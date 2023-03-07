@@ -7,7 +7,7 @@ use std::{
 use raw_window_handle::RawWindowHandle;
 use smallvec::SmallVec;
 use windows::{
-    core::Interface,
+    core::{Interface, PCSTR},
     Win32::{
         Foundation::{GetLastError, HANDLE, HWND},
         Graphics::{
@@ -15,11 +15,15 @@ use windows::{
             Direct3D12::{
                 D3D12CreateDevice, D3D12GetDebugInterface, ID3D12CommandAllocator,
                 ID3D12CommandList, ID3D12CommandQueue, ID3D12Debug, ID3D12DescriptorHeap,
-                ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource,
-                D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
+                ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue1,
+                ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
                 D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
                 D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                D3D12_FENCE_FLAG_NONE, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+                D3D12_FENCE_FLAG_NONE, D3D12_MESSAGE_CALLBACK_IGNORE_FILTERS,
+                D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_ID, D3D12_MESSAGE_SEVERITY,
+                D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR,
+                D3D12_MESSAGE_SEVERITY_INFO, D3D12_MESSAGE_SEVERITY_MESSAGE,
+                D3D12_MESSAGE_SEVERITY_WARNING, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
                 D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
                 D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATES,
                 D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -72,7 +76,7 @@ impl GraphicsContext {
         }
     }
 
-    pub fn draw(&mut self, target: &Image, content: &RenderGraph) {
+    pub fn draw(&mut self, target: &Image, _content: &RenderGraph) {
         let mut graphics = self.graphics_queue.borrow_mut();
 
         let allocator = graphics.get_command_allocator(&self.dx);
@@ -205,24 +209,11 @@ impl Surface {
         graphics_queue.wait_until(self.render_targets[0].as_ref().unwrap().last_use.get());
         graphics_queue.wait_until(self.render_targets[1].as_ref().unwrap().last_use.get());
 
-        // need to reset command allocators?
-
         // destroy the old render targets
         {
             let _ = self.render_targets[0].take();
             let _ = self.render_targets[1].take();
         }
-        // self.rtv_heap = unsafe {
-        //     self.dx
-        //         .device
-        //         .CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-        //             Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-        //             NumDescriptors: Self::BUFFER_COUNT,
-        //             Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-        //             NodeMask: 0,
-        //         })
-        // }
-        // .unwrap();
 
         unsafe {
             self.swapchain.ResizeBuffers(
@@ -246,7 +237,9 @@ impl Surface {
         // block until the next image is available
         //
         // NOTE: should this instead be done just before presenting???
-        unsafe { WaitForSingleObjectEx(self.waitable_object, u32::MAX, false) };
+        unsafe { WaitForSingleObjectEx(self.waitable_object, u32::MAX, false) }
+            .ok()
+            .unwrap();
 
         self.image_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() };
         SurfaceImage { surface: self }
@@ -361,10 +354,46 @@ impl Interfaces {
         let mut device: Option<ID3D12Device> = None;
         unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device) }.unwrap();
 
+        if config.debug_mode {
+            let queue: ID3D12InfoQueue1 = device.as_ref().unwrap().cast().unwrap();
+
+            let mut cookie = 0;
+            unsafe {
+                queue.RegisterMessageCallback(
+                    Some(Self::d3d12_debug_callback),
+                    D3D12_MESSAGE_CALLBACK_IGNORE_FILTERS,
+                    std::ptr::null(),
+                    &mut cookie,
+                )
+            }
+            .unwrap();
+        }
+
         Self {
             gi,
             device: device.unwrap(),
         }
+    }
+
+    extern "system" fn d3d12_debug_callback(
+        _category: D3D12_MESSAGE_CATEGORY,
+        severity: D3D12_MESSAGE_SEVERITY,
+        id: D3D12_MESSAGE_ID,
+        description: PCSTR,
+        _context: *mut std::ffi::c_void,
+    ) {
+        print!("D3D12: ");
+
+        match severity {
+            D3D12_MESSAGE_SEVERITY_CORRUPTION => print!("Corruption: "),
+            D3D12_MESSAGE_SEVERITY_ERROR => print!("Error: "),
+            D3D12_MESSAGE_SEVERITY_WARNING => print!("Warning: "),
+            D3D12_MESSAGE_SEVERITY_INFO => print!("Info: "),
+            D3D12_MESSAGE_SEVERITY_MESSAGE => print!("Message: "),
+            _ => print!("Unknown severity: "),
+        }
+
+        println!("{:?} {}", id, unsafe { description.display() });
     }
 }
 
@@ -439,6 +468,7 @@ impl GraphicsQueue {
                     .unwrap();
                 WaitForSingleObjectEx(self.event, u32::MAX, false);
             }
+            self.last_value.set(fence_value);
         }
     }
 
@@ -449,6 +479,7 @@ impl GraphicsQueue {
                 .unwrap();
             WaitForSingleObjectEx(self.event, u32::MAX, false);
         }
+        self.last_value.set(self.next_value - 1);
     }
 
     fn get_command_allocator(&mut self, dx: &Interfaces) -> ID3D12CommandAllocator {
