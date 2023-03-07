@@ -1,11 +1,14 @@
+use std::rc::Rc;
+
 use geometry::{Extent, Point, ScreenSpace};
+use graphics::{GraphicsConfig, GraphicsContext, Surface};
 use shell::{
     ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
     WindowSpawner,
 };
 
 fn main() {
-    let f = "hi";
+    let graphics = Rc::new(GraphicsContext::new(&GraphicsConfig::default()));
 
     let main_window = WindowDesc {
         title: "Sandbox",
@@ -15,8 +18,8 @@ fn main() {
         position: None,
         flags: WindowFlags::VISIBLE | WindowFlags::RESIZABLE,
         handler: &mut |window| {
-            println!("{}", f);
-            AppWindow::new(window)
+            let surface = graphics.create_surface(&window);
+            AppWindow::new(window, surface, graphics.clone())
         },
     };
 
@@ -25,14 +28,18 @@ fn main() {
 
 struct AppWindow {
     window: Window,
-    click_count: u64,
+    surface: Surface,
+    graphics: Rc<GraphicsContext>,
+    resizing: bool,
 }
 
 impl AppWindow {
-    pub fn new(window: Window) -> Self {
+    pub fn new(window: Window, surface: Surface, graphics: Rc<GraphicsContext>) -> Self {
         Self {
             window,
-            click_count: 0,
+            surface,
+            graphics,
+            resizing: false,
         }
     }
 }
@@ -49,35 +56,12 @@ impl WindowHandler for AppWindow {
 
     fn on_mouse_button(
         &mut self,
-        control: &mut dyn WindowSpawner<Self>,
-        button: MouseButton,
-        state: ButtonState,
+        _control: &mut dyn WindowSpawner<Self>,
+        _button: MouseButton,
+        _state: ButtonState,
         _at: Point<i32, ScreenSpace>,
     ) {
-        match button {
-            MouseButton::Left => {
-                if ButtonState::Released == state {
-                    self.click_count += 1;
-                    self.window
-                        .set_title(&format!("Sandbox-Child-{}", self.click_count));
-                }
-            }
-            MouseButton::Middle => {}
-            MouseButton::Right => {
-                if ButtonState::Released == state {
-                    control.spawn(WindowDesc {
-                        title: "Sandbox-Child",
-                        size: Extent::new(1280, 720),
-                        min_size: None,
-                        max_size: None,
-                        position: None,
-                        flags: WindowFlags::VISIBLE | WindowFlags::RESIZABLE,
-                        handler: &mut AppWindow::new,
-                    });
-                }
-            }
-            MouseButton::Other(_) => {}
-        }
+        // no-op
     }
 
     fn on_cursor_move(
@@ -109,7 +93,10 @@ impl WindowHandler for AppWindow {
                         max_size: None,
                         position: None,
                         flags: WindowFlags::VISIBLE | WindowFlags::RESIZABLE,
-                        handler: &mut AppWindow::new,
+                        handler: &mut |window| {
+                            let surface = self.graphics.create_surface(&window);
+                            AppWindow::new(window, surface, self.graphics.clone())
+                        },
                     });
                 }
             }
@@ -126,7 +113,7 @@ impl WindowHandler for AppWindow {
         _control: &mut dyn WindowSpawner<Self>,
         _inner_size: Extent<u32, ScreenSpace>,
     ) {
-        // no-op
+        self.surface.resize();
     }
 
     fn on_rescale(
@@ -138,9 +125,12 @@ impl WindowHandler for AppWindow {
         // no-op
     }
 
-    fn on_idle(&mut self, _spawner: &mut dyn WindowSpawner<Self>) {}
+    fn on_idle(&mut self, _spawner: &mut dyn WindowSpawner<Self>) {
+        // no-op
+    }
 
     fn on_redraw(&mut self, _control: &mut dyn WindowSpawner<Self>) {
-        // no-op
+        let image = self.surface.get_next_image();
+        image.present();
     }
 }

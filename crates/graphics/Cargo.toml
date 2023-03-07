@@ -4,3 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+raw-window-handle = "0.5.0"
+
+[dependencies.windows]
+version = "0.43"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Threading",
+    "Win32_Security",
+]
+
+[dev-dependencies.windows]
+version = "0.43"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D_Dxc",
+]
