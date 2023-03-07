@@ -1,9 +1,12 @@
-use crate::Vertex;
+use geometry::Rect;
+
+use crate::{Color, RoundedRectVertex, Vertex};
 
 #[allow(clippy::module_name_repetitions)]
 #[repr(u16)]
 pub enum RenderGraphCommand {
     Root,
+    DrawRect { first_index: u16, num_indices: u16 },
     DrawImmediate { first_index: u16, num_indices: u16 },
 }
 
@@ -30,6 +33,7 @@ impl RenderGraphNodeId {
 pub struct RenderGraph {
     pub(crate) imm_indices: Vec<u16>,
     pub(crate) imm_vertices: Vec<Vertex>,
+    pub(crate) imm_rect_vertices: Vec<RoundedRectVertex>,
     nodes: Vec<RenderGraphNode>,
 }
 
@@ -38,6 +42,7 @@ impl Default for RenderGraph {
         Self {
             imm_indices: Vec::new(),
             imm_vertices: Vec::new(),
+            imm_rect_vertices: Vec::new(),
             nodes: vec![RenderGraphNode {
                 next: 0,
                 first_child: 0,
@@ -118,6 +123,87 @@ impl RenderGraph {
             first_child: 0,
             last_child: 0,
             command: RenderGraphCommand::DrawImmediate {
+                first_index: first_index as u16,
+                num_indices: indices.len() as u16,
+            },
+        });
+
+        let parent = &mut self.nodes[parent.index as usize];
+        let prev_sibling = parent.last_child as usize;
+        parent.last_child = node_id;
+
+        if parent.first_child == 0 {
+            parent.first_child = node_id;
+        } else {
+            self.nodes[prev_sibling].next = node_id;
+        }
+    }
+
+    pub fn draw_rect(
+        &mut self,
+        parent: RenderGraphNodeId,
+        rect: Rect<f32>,
+        colors: [Color; 4],
+        corner_radii: Option<[f32; 4]>,
+    ) {
+        let rect_center = rect.center();
+
+        let vertices = [
+            RoundedRectVertex {
+                position: rect.top_left(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: corner_radii.unwrap_or_default(),
+                inner_radii: [0.0; 4],
+                color: colors[0],
+            },
+            RoundedRectVertex {
+                position: rect.top_right(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: corner_radii.unwrap_or_default(),
+                inner_radii: [0.0; 4],
+                color: colors[1],
+            },
+            RoundedRectVertex {
+                position: rect.bottom_right(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: corner_radii.unwrap_or_default(),
+                inner_radii: [0.0; 4],
+                color: colors[2],
+            },
+            RoundedRectVertex {
+                position: rect.bottom_left(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: corner_radii.unwrap_or_default(),
+                inner_radii: [0.0; 4],
+                color: colors[3],
+            },
+        ];
+
+        let vertex_offset = self.imm_rect_vertices.len();
+        self.imm_rect_vertices.extend_from_slice(&vertices);
+
+        let indices = [
+            vertex_offset as u16,
+            vertex_offset as u16 + 1,
+            vertex_offset as u16 + 2,
+            vertex_offset as u16,
+            vertex_offset as u16 + 2,
+            vertex_offset as u16 + 3,
+        ];
+
+        let first_index = self.imm_indices.len();
+        self.imm_indices.extend_from_slice(&indices);
+
+        let node_id = self.nodes.len() as u16;
+        self.nodes.push(RenderGraphNode {
+            next: 0,
+            first_child: 0,
+            last_child: 0,
+            command: RenderGraphCommand::DrawRect {
                 first_index: first_index as u16,
                 num_indices: indices.len() as u16,
             },

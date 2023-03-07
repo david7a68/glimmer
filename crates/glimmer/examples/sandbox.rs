@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use geometry::{Extent, Point, ScreenSpace};
+use geometry::{Extent, Point, Rect, ScreenSpace};
 use graphics::{
     Color, GraphicsConfig, GraphicsContext, RenderGraph, RenderGraphNodeId, Surface, Vertex,
 };
@@ -141,18 +141,6 @@ impl WindowHandler for AppWindow {
         render_graph.draw_immediate(
             RenderGraphNodeId::root(),
             &[
-                // Vertex {
-                //     position: Point::new(100.0, 100.0),
-                //     color: Color::new(1.0, 0.0, 0.0, 1.0),
-                // },
-                // Vertex {
-                //     position: Point::new(200.0, 200.0),
-                //     color: Color::new(0.0, 0.0, 1.0, 1.0),
-                // },
-                // Vertex {
-                //     position: Point::new(100.0, 200.0),
-                //     color: Color::new(0.0, 1.0, 0.0, 1.0),
-                // },
                 Vertex {
                     position: Point::new(0.0, 0.0),
                     color: Color::RED,
@@ -170,6 +158,13 @@ impl WindowHandler for AppWindow {
                 },
             ],
             &[0, 1, 2],
+        );
+
+        render_graph.draw_rect(
+            RenderGraphNodeId::root(),
+            Rect::new(Point::new(800.0, 100.0), Point::new(1000.0, 300.0)),
+            [Color::GREEN; 4],
+            Some([20.0, 0.0, 300.0, 300.0]),
         );
 
         self.graphics.draw(image.image(), &render_graph);

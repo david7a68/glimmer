@@ -1,6 +1,6 @@
 use std::{
     marker::PhantomData,
-    ops::{Mul, Sub},
+    ops::{Add, Div, Mul, Sub},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,27 +111,26 @@ impl<T: num::Real> Angle<T> for Degrees<T> {
 }
 
 #[repr(C)]
-#[derive(Copy, Debug, PartialEq, Eq)]
-pub struct Point<T, Unit = UndefinedUnit> {
+#[derive(Debug, PartialEq, Eq)]
+pub struct Point<T: num::Num, Unit = UndefinedUnit> {
     pub x: T,
     pub y: T,
     _unit: PhantomData<Unit>,
 }
 
-impl<T, Unit> Clone for Point<T, Unit>
-where
-    T: Clone,
-{
+impl<T: num::Num, Unit> Clone for Point<T, Unit> {
     fn clone(&self) -> Self {
         Self {
-            x: self.x.clone(),
-            y: self.y.clone(),
+            x: self.x,
+            y: self.y,
             _unit: PhantomData,
         }
     }
 }
 
-impl<T, Unit> Point<T, Unit> {
+impl<T: num::Num, Unit> Copy for Point<T, Unit> {}
+
+impl<T: num::Num, Unit> Point<T, Unit> {
     #[must_use]
     pub fn new(x: T, y: T) -> Self {
         Self {
@@ -158,14 +157,22 @@ impl<T, Unit> Point<T, Unit> {
     }
 }
 
-impl<T: Default, Unit> Default for Point<T, Unit> {
+impl<T: num::Num, Unit> Default for Point<T, Unit> {
     fn default() -> Self {
         Self::new(T::default(), T::default())
     }
 }
 
-impl<T: Sub, Unit> Sub for Point<T, Unit> {
-    type Output = Offset<T::Output, Unit>;
+impl<T: num::Num, Unit> Add for Point<T, Unit> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self::Output::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
+impl<T: num::Num, Unit> Sub for Point<T, Unit> {
+    type Output = Offset<<T as Sub<T>>::Output, Unit>;
 
     fn sub(self, rhs: Self) -> Self::Output {
         Self::Output::new(self.x - rhs.x, self.y - rhs.y)
@@ -173,13 +180,13 @@ impl<T: Sub, Unit> Sub for Point<T, Unit> {
 }
 
 #[repr(C)]
-pub struct Offset<T, Unit = UndefinedUnit> {
+pub struct Offset<T: num::Num, Unit = UndefinedUnit> {
     pub x: T,
     pub y: T,
     _unit: PhantomData<Unit>,
 }
 
-impl<T, Unit> Offset<T, Unit> {
+impl<T: num::Num, Unit> Offset<T, Unit> {
     #[must_use]
     pub fn new(x: T, y: T) -> Self {
         Self {
@@ -190,23 +197,22 @@ impl<T, Unit> Offset<T, Unit> {
     }
 
     #[must_use]
-    pub fn zero() -> Self
-    where
-        T: num::Zero,
-    {
+    pub fn zero() -> Self {
         Self::new(T::zero(), T::zero())
     }
 
     #[must_use]
-    pub fn one() -> Self
-    where
-        T: num::One,
-    {
+    pub fn one() -> Self {
         Self::new(T::one(), T::one())
+    }
+
+    #[must_use]
+    pub fn to_point(&self) -> Point<T, Unit> {
+        Point::new(self.x, self.y)
     }
 }
 
-impl<T, Unit> From<Point<T, Unit>> for Offset<T, Unit> {
+impl<T: num::Num, Unit> From<Point<T, Unit>> for Offset<T, Unit> {
     fn from(point: Point<T, Unit>) -> Self {
         Self {
             x: point.x,
@@ -216,20 +222,28 @@ impl<T, Unit> From<Point<T, Unit>> for Offset<T, Unit> {
     }
 }
 
-impl<T: Default, Unit> Default for Offset<T, Unit> {
+impl<T: num::Num, Unit> Div<T> for Offset<T, Unit> {
+    type Output = Self;
+
+    fn div(self, rhs: T) -> Self::Output {
+        Self::new(self.x / rhs, self.y / rhs)
+    }
+}
+
+impl<T: num::Num, Unit> Default for Offset<T, Unit> {
     fn default() -> Self {
         Self::new(T::default(), T::default())
     }
 }
 
 #[repr(C)]
-pub struct Scale<T, Unit = UndefinedUnit> {
+pub struct Scale<T: num::Num, Unit = UndefinedUnit> {
     pub x: T,
     pub y: T,
     _unit: PhantomData<Unit>,
 }
 
-impl<T, Unit> Scale<T, Unit> {
+impl<T: num::Num, Unit> Scale<T, Unit> {
     #[must_use]
     pub fn new(x: T, y: T) -> Self {
         Self {
@@ -240,36 +254,31 @@ impl<T, Unit> Scale<T, Unit> {
     }
 
     #[must_use]
-    pub fn zero() -> Self
-    where
-        T: num::Zero,
-    {
+    pub fn zero() -> Self {
         Self::new(T::zero(), T::zero())
     }
 
     #[must_use]
-    pub fn one() -> Self
-    where
-        T: num::One,
-    {
+    pub fn one() -> Self {
         Self::new(T::one(), T::one())
     }
 }
 
-impl<T: Default, Unit> Default for Scale<T, Unit> {
+impl<T: num::Num, Unit> Default for Scale<T, Unit> {
     fn default() -> Self {
         Self::new(T::default(), T::default())
     }
 }
 
 #[repr(C)]
-pub struct Extent<T, Unit = UndefinedUnit> {
+#[derive(Debug)]
+pub struct Extent<T: num::Num, Unit = UndefinedUnit> {
     pub width: T,
     pub height: T,
     _unit: PhantomData<Unit>,
 }
 
-impl<T, Unit> Extent<T, Unit> {
+impl<T: num::Num, Unit> Extent<T, Unit> {
     #[must_use]
     pub fn new(width: T, height: T) -> Self {
         Self {
@@ -280,33 +289,50 @@ impl<T, Unit> Extent<T, Unit> {
     }
 
     #[must_use]
-    pub fn zero() -> Self
-    where
-        T: num::Zero,
-    {
+    pub fn zero() -> Self {
         Self::new(T::zero(), T::zero())
     }
 }
 
-impl<T: Default, Unit> Default for Extent<T, Unit> {
+impl<T: num::Num, Unit> Clone for Extent<T, Unit> {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            _unit: PhantomData,
+        }
+    }
+}
+
+impl<T: num::Num, Unit> Copy for Extent<T, Unit> {}
+
+impl<T: num::Num, Unit> Default for Extent<T, Unit> {
     fn default() -> Self {
         Self::new(T::default(), T::default())
     }
 }
 
-impl<T: PartialEq, Unit> PartialEq for Extent<T, Unit> {
+impl<T: num::Num, Unit> PartialEq for Extent<T, Unit> {
     fn eq(&self, other: &Self) -> bool {
         self.width == other.width && self.height == other.height
     }
 }
 
+impl<T: num::Num, Unit> Div<T> for Extent<T, Unit> {
+    type Output = Self;
+
+    fn div(self, rhs: T) -> Self::Output {
+        Self::new(self.width / rhs, self.height / rhs)
+    }
+}
+
 #[repr(C)]
-pub struct Rect<T, Unit = UndefinedUnit> {
+pub struct Rect<T: num::Num, Unit = UndefinedUnit> {
     pub p0: Point<T, Unit>,
     pub p1: Point<T, Unit>,
 }
 
-impl<T, Unit> Rect<T, Unit> {
+impl<T: num::Num, Unit> Rect<T, Unit> {
     #[must_use]
     pub fn new(p0: Point<T, Unit>, p1: Point<T, Unit>) -> Self {
         Self { p0, p1 }
@@ -326,6 +352,31 @@ impl<T, Unit> Rect<T, Unit> {
         T: Sub<Output = T> + Copy,
     {
         Extent::new(self.p1.x - self.p0.x, self.p1.y - self.p0.y)
+    }
+
+    #[must_use]
+    pub fn center(&self) -> Point<T, Unit> {
+        self.p0 + ((self.p1 - self.p0) / (T::one() + T::one())).to_point()
+    }
+
+    #[must_use]
+    pub fn top_left(&self) -> Point<T, Unit> {
+        self.p0
+    }
+
+    #[must_use]
+    pub fn top_right(&self) -> Point<T, Unit> {
+        Point::new(self.p1.x, self.p0.y)
+    }
+
+    #[must_use]
+    pub fn bottom_left(&self) -> Point<T, Unit> {
+        Point::new(self.p0.x, self.p1.y)
+    }
+
+    #[must_use]
+    pub fn bottom_right(&self) -> Point<T, Unit> {
+        self.p1
     }
 }
 
@@ -530,7 +581,7 @@ impl<T: num::Real, Src, Dst> std::fmt::Debug for Transform<T, Src, Dst> {
 }
 
 pub mod num {
-    use std::ops::{Add, Mul, Neg};
+    use std::ops::{Add, Div, Mul, Neg, Sub};
 
     pub trait Zero {
         fn zero() -> Self;
@@ -540,20 +591,25 @@ pub mod num {
         fn one() -> Self;
     }
 
-    pub trait Real:
+    pub trait Num:
         Zero
         + One
         + Sized
         + Copy
         + Default
-        + Neg<Output = Self>
         + Add<Output = Self>
+        + Sub<Output = Self>
         + Mul<Output = Self>
+        + Div<Output = Self>
         + PartialOrd
         + std::fmt::Debug
         + std::fmt::Display
-        + Into<f32>
     {
+    }
+
+    pub trait SNum: Num + Neg<Output = Self> {}
+
+    pub trait Real: SNum + Into<f32> {
         #[must_use]
         fn sin(self) -> Self;
 
@@ -582,6 +638,24 @@ pub mod num {
         }
     }
 
+    impl Num for i32 {}
+
+    impl SNum for i32 {}
+
+    impl Zero for u32 {
+        fn zero() -> Self {
+            0
+        }
+    }
+
+    impl One for u32 {
+        fn one() -> Self {
+            1
+        }
+    }
+
+    impl Num for u32 {}
+
     impl Zero for f32 {
         fn zero() -> Self {
             0.0
@@ -593,6 +667,10 @@ pub mod num {
             1.0
         }
     }
+
+    impl Num for f32 {}
+
+    impl SNum for f32 {}
 
     impl Real for f32 {
         fn sin(self) -> Self {

@@ -36,7 +36,7 @@
 
 use std::cell::RefCell;
 
-use geometry::Point;
+use geometry::{Extent, Point};
 use raw_window_handle::HasRawWindowHandle;
 
 mod render_graph;
@@ -49,7 +49,7 @@ use dx12 as platform;
 
 pub use render_graph::{RenderGraph, RenderGraphNodeId};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Color {
     pub r: f32,
     pub g: f32,
@@ -85,9 +85,21 @@ impl Color {
     }
 }
 
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Vertex {
     pub position: Point<f32>,
+    pub color: Color,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RoundedRectVertex {
+    pub position: Point<f32>,
+    pub rect_size: Extent<f32>,
+    pub rect_center: Point<f32>,
+    pub outer_radii: [f32; 4],
+    pub inner_radii: [f32; 4],
     pub color: Color,
 }
 

@@ -1,3 +1,5 @@
+use std::ptr::NonNull;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     /// The heap does not have enough free memory to satisfy the allocation
@@ -5,6 +7,8 @@ pub enum Error {
     OutOfMemory,
     /// The heap is not large enough to satisfy the allocation request.
     InsufficientCapacity,
+    /// The allocator does not have a access to the heap.
+    NoHeap,
 }
 
 pub struct FrameAllocator<'a> {
@@ -79,13 +83,34 @@ impl<'a> FrameAllocator<'a> {
 
         let r = Ok(Allocation {
             size,
-            offset: self.bytes_allocated + adjust_amount,
+            virtual_offset: self.bytes_allocated + adjust_amount,
             heap_offset: heap_ptr,
         });
 
         self.bytes_allocated += adjust_amount + size;
 
         r
+    }
+
+    pub fn upload<T: Copy>(&mut self, values: &[T]) -> Result<Allocation, Error> {
+        let size = std::mem::size_of_val(values) as u64;
+        let alignment = std::mem::align_of::<T>() as u64;
+        let allocation = self.allocate(size, alignment)?;
+
+        let heap_ptr = self.allocator.base_ptr.ok_or(Error::NoHeap)?;
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                values.as_ptr(),
+                heap_ptr
+                    .as_ptr()
+                    .add(allocation.heap_offset as usize)
+                    .cast(),
+                values.len(),
+            )
+        }
+
+        Ok(allocation)
     }
 
     pub fn finish(mut self) -> FrameMarker {
@@ -119,7 +144,7 @@ impl PartialOrd for FrameMarker {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Allocation {
     pub size: u64,
-    pub offset: u64,
+    virtual_offset: u64,
     pub heap_offset: u64,
 }
 
@@ -127,14 +152,16 @@ pub struct Allocator {
     capacity: u64,
     bytes_freed: u64,
     bytes_allocated: u64,
+    base_ptr: Option<NonNull<u8>>,
 }
 
 impl Allocator {
-    pub fn new(capacity: u64) -> Self {
+    pub fn new(capacity: u64, base_ptr: Option<NonNull<u8>>) -> Self {
         Self {
             capacity,
             bytes_freed: 0,
             bytes_allocated: 0,
+            base_ptr,
         }
     }
 
@@ -204,7 +231,7 @@ mod tests {
 
     #[test]
     fn test() {
-        let mut allocator = Allocator::new(100);
+        let mut allocator = Allocator::new(100, None);
 
         let m0 = {
             let mut frame = allocator.begin_frame();
@@ -213,7 +240,7 @@ mod tests {
                 frame.allocate(20, 4),
                 Ok(Allocation {
                     size: 20,
-                    offset: 0,
+                    virtual_offset: 0,
                     heap_offset: 0,
                 })
             );
@@ -230,7 +257,7 @@ mod tests {
                 frame.allocate(70, 4),
                 Ok(Allocation {
                     size: 70,
-                    offset: 20,
+                    virtual_offset: 20,
                     heap_offset: 20,
                 })
             );
@@ -248,7 +275,7 @@ mod tests {
                 frame.allocate(20, 8),
                 Ok(Allocation {
                     size: 20,
-                    offset: 100,
+                    virtual_offset: 100,
                     heap_offset: 0,
                 })
             );
@@ -272,7 +299,7 @@ mod tests {
                 frame.allocate(15, 64).unwrap(),
                 Allocation {
                     size: 15,
-                    offset: 164,
+                    virtual_offset: 164,
                     heap_offset: 64,
                 }
             );
@@ -297,7 +324,7 @@ mod tests {
                 frame.allocate(80, 16),
                 Ok(Allocation {
                     size: 80,
-                    offset: 200,
+                    virtual_offset: 200,
                     heap_offset: 0,
                 })
             );

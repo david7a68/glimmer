@@ -1,12 +1,15 @@
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
+    ptr::NonNull,
     rc::Rc,
 };
 
 use geometry::{Extent, ScreenSpace};
 use raw_window_handle::RawWindowHandle;
 use smallvec::SmallVec;
+
+use windows::core::PCSTR;
 #[allow(clippy::wildcard_imports)]
 use windows::{
     s,
@@ -16,7 +19,9 @@ use windows::{
     },
 };
 
-use crate::{render_graph::RenderGraph, GraphicsConfig, RenderGraphNodeId, Vertex};
+use crate::{
+    render_graph::RenderGraph, GraphicsConfig, RenderGraphNodeId, RoundedRectVertex, Vertex,
+};
 
 mod dx;
 mod graphics;
@@ -25,7 +30,7 @@ mod temp_allocator;
 
 pub use surface::{Surface, SurfaceImage};
 
-use self::temp_allocator::FrameMarker;
+use self::temp_allocator::{Allocation, FrameMarker};
 
 struct Frame {
     barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
@@ -42,9 +47,10 @@ struct FrameInFlight {
 pub struct GraphicsContext {
     dx: Rc<dx::Interfaces>,
     graphics_queue: Rc<RefCell<graphics::Queue>>,
-    ui_shader: Polygon,
 
-    upload_ptr: *mut std::ffi::c_void,
+    polygon_shader: PolygonShader,
+    round_rect_shader: RoundRectShader,
+
     upload_buffer: ID3D12Resource,
     upload_allocator: temp_allocator::Allocator,
 
@@ -60,7 +66,8 @@ impl GraphicsContext {
 
         let graphics_queue = graphics::Queue::new(&dx);
 
-        let ui_shader = Polygon::new(&dx);
+        let polygon_shader = PolygonShader::new(&dx);
+        let round_rect_shader = RoundRectShader::new(&dx);
 
         // create upload buffer
         let upload_buffer: ID3D12Resource = unsafe {
@@ -99,7 +106,6 @@ impl GraphicsContext {
         };
 
         let upload_ptr = unsafe {
-            // persistently mapped pointer
             let mut ptr = std::ptr::null_mut();
             upload_buffer
                 .Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut ptr))
@@ -107,13 +113,16 @@ impl GraphicsContext {
             ptr
         };
 
-        let upload_allocator = temp_allocator::Allocator::new(Self::UPLOAD_BUFFER_SIZE);
+        let upload_allocator = temp_allocator::Allocator::new(
+            Self::UPLOAD_BUFFER_SIZE,
+            NonNull::new(upload_ptr.cast()),
+        );
 
         Self {
             dx: Rc::new(dx),
             graphics_queue: Rc::new(RefCell::new(graphics_queue)),
-            ui_shader,
-            upload_ptr,
+            polygon_shader,
+            round_rect_shader,
             upload_buffer,
             upload_allocator,
             unused_frames: Vec::new(),
@@ -135,50 +144,13 @@ impl GraphicsContext {
     pub fn draw(&mut self, target: &Image, content: &RenderGraph) {
         let frame = self.begin_frame();
 
-        let (frame_marker, imm_vertex_view, imm_index_view) = {
+        let (frame_marker, imm_vertex_view, imm_index_view, imm_rect_view) = {
             let mut frame_alloc = self.upload_allocator.begin_frame();
 
-            let vertex_memory = frame_alloc
-                .allocate(
-                    (content.imm_vertices.len() * std::mem::size_of::<Vertex>()) as u64,
-                    std::mem::align_of::<Vertex>() as u64,
-                )
-                .expect("temporary memory allocation failed, todo: handle this gracefully");
+            let vertex_memory = frame_alloc.upload(&content.imm_vertices).unwrap();
+            let vertex_view = vertex_buffer_view::<Vertex>(&self.upload_buffer, &vertex_memory);
 
-            unsafe {
-                std::slice::from_raw_parts_mut(
-                    self.upload_ptr
-                        .add(vertex_memory.heap_offset as usize)
-                        .cast(),
-                    content.imm_vertices.len(),
-                )
-                .copy_from_slice(&content.imm_vertices);
-            }
-
-            let vertex_view = D3D12_VERTEX_BUFFER_VIEW {
-                BufferLocation: unsafe { self.upload_buffer.GetGPUVirtualAddress() }
-                    + vertex_memory.heap_offset,
-                SizeInBytes: vertex_memory.size as u32,
-                StrideInBytes: std::mem::size_of::<Vertex>() as u32,
-            };
-
-            let index_memory = frame_alloc
-                .allocate(
-                    (content.imm_indices.len() * std::mem::size_of::<u16>()) as u64,
-                    std::mem::align_of::<u16>() as u64,
-                )
-                .expect("temporary memory allocation failed, todo: handle this gracefully");
-
-            unsafe {
-                std::slice::from_raw_parts_mut(
-                    self.upload_ptr
-                        .add(index_memory.heap_offset as usize)
-                        .cast(),
-                    content.imm_indices.len(),
-                )
-                .copy_from_slice(&content.imm_indices);
-            }
-
+            let index_memory = frame_alloc.upload(&content.imm_indices).unwrap();
             let index_view = D3D12_INDEX_BUFFER_VIEW {
                 BufferLocation: unsafe { self.upload_buffer.GetGPUVirtualAddress() }
                     + index_memory.heap_offset,
@@ -186,7 +158,11 @@ impl GraphicsContext {
                 Format: DXGI_FORMAT_R16_UINT,
             };
 
-            (frame_alloc.finish(), vertex_view, index_view)
+            let rect_memory = frame_alloc.upload(&content.imm_rect_vertices).unwrap();
+            let rect_view =
+                vertex_buffer_view::<RoundedRectVertex>(&self.upload_buffer, &rect_memory);
+
+            (frame_alloc.finish(), vertex_view, index_view, rect_view)
         };
 
         unsafe {
@@ -202,7 +178,7 @@ impl GraphicsContext {
 
             frame.command_list.ClearRenderTargetView(
                 target.rtv,
-                [0.5, 0.5, 0.5, 1.0].as_ptr(),
+                [1.0, 1.0, 1.0, 1.0].as_ptr(),
                 &[],
             );
 
@@ -232,8 +208,9 @@ impl GraphicsContext {
                 content,
                 RenderGraphNodeId::root(),
                 &constants,
-                &imm_vertex_view,
+                &imm_rect_view,
                 &imm_index_view,
+                &imm_vertex_view,
             );
 
             frame.command_list.ResourceBarrier(&[transition_barrier(
@@ -262,7 +239,7 @@ impl GraphicsContext {
             }
             .unwrap();
 
-            let command_list = unsafe {
+            let command_list: ID3D12GraphicsCommandList = unsafe {
                 self.dx.device.CreateCommandList(
                     0,
                     D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -331,14 +308,16 @@ impl GraphicsContext {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_render_graph(
         &self,
         command_list: &ID3D12GraphicsCommandList,
         content: &RenderGraph,
         node: RenderGraphNodeId,
         constants: &ShaderConstants,
-        imm_vertex_view: &D3D12_VERTEX_BUFFER_VIEW,
+        imm_rect_view: &D3D12_VERTEX_BUFFER_VIEW,
         imm_index_view: &D3D12_INDEX_BUFFER_VIEW,
+        imm_vertex_view: &D3D12_VERTEX_BUFFER_VIEW,
     ) {
         use crate::render_graph::RenderGraphCommand;
 
@@ -348,8 +327,24 @@ impl GraphicsContext {
                 first_index,
                 num_indices,
             } => unsafe {
-                self.ui_shader.bind(command_list, constants);
+                self.polygon_shader.bind(command_list, constants);
                 command_list.IASetVertexBuffers(0, Some(&[*imm_vertex_view]));
+                command_list.IASetIndexBuffer(Some(imm_index_view));
+
+                command_list.DrawIndexedInstanced(
+                    u32::from(*num_indices),
+                    1,
+                    u32::from(*first_index),
+                    0,
+                    0,
+                );
+            },
+            RenderGraphCommand::DrawRect {
+                first_index,
+                num_indices,
+            } => unsafe {
+                self.round_rect_shader.bind(command_list, constants);
+                command_list.IASetVertexBuffers(0, Some(&[*imm_rect_view]));
                 command_list.IASetIndexBuffer(Some(imm_index_view));
 
                 command_list.DrawIndexedInstanced(
@@ -368,8 +363,9 @@ impl GraphicsContext {
                 content,
                 child,
                 constants,
-                imm_vertex_view,
+                imm_rect_view,
                 imm_index_view,
+                imm_vertex_view,
             );
         }
     }
@@ -427,44 +423,59 @@ impl ShaderConstants {
     }
 }
 
-struct Polygon {
+struct PolygonShader {
     shader: Shader,
 }
 
-impl Polygon {
+impl PolygonShader {
     const UI_VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/polygon_vs.cso"));
     const UI_PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/polygon_ps.cso"));
 
     #[allow(clippy::too_many_lines)]
     fn new(dx: &dx::Interfaces) -> Self {
-        let input_elements = [
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: s!("POSITION"),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 0,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: s!("COLOR\0"),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: D3D12_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-        ];
-
         let shader = Shader::new(
             dx,
             Self::UI_VERTEX_SHADER,
             Self::UI_PIXEL_SHADER,
-            None,
             DXGI_FORMAT_R16G16B16A16_FLOAT,
-            &input_elements,
+            &[
+                vertex_input(s!("POSITION"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+                vertex_input(s!("COLOR"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+            ],
+        );
+
+        Self { shader }
+    }
+
+    fn bind(&self, command_list: &ID3D12GraphicsCommandList, constants: &ShaderConstants) {
+        self.shader.bind(command_list);
+        constants.write(command_list);
+        unsafe { command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
+    }
+}
+
+struct RoundRectShader {
+    shader: Shader,
+}
+
+impl RoundRectShader {
+    const VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rect_vs.cso"));
+    const PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rect_ps.cso"));
+
+    fn new(dx: &dx::Interfaces) -> Self {
+        let shader = Shader::new(
+            dx,
+            Self::VERTEX_SHADER,
+            Self::PIXEL_SHADER,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            &[
+                vertex_input(s!("POSITION"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+                vertex_input(s!("RECT_SIZE"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+                vertex_input(s!("RECT_CENTER"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+                vertex_input(s!("OUTER_RADIUS"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+                vertex_input(s!("INNER_RADIUS"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+                vertex_input(s!("COLOR\0"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+            ],
         );
 
         Self { shader }
@@ -487,21 +498,22 @@ impl Shader {
         dx: &dx::Interfaces,
         vertex_shader: &[u8],
         pixel_shader: &[u8],
-        geometry_shader: Option<&[u8]>,
         format: DXGI_FORMAT,
         input: &[D3D12_INPUT_ELEMENT_DESC],
     ) -> Shader {
         let root_signature = unsafe { dx.device.CreateRootSignature(0, vertex_shader) }.unwrap();
 
         let mut blend_targets = [D3D12_RENDER_TARGET_BLEND_DESC::default(); 8];
+
+        // Blend with premultiplied alpha
         blend_targets[0] = D3D12_RENDER_TARGET_BLEND_DESC {
             BlendEnable: true.into(),
             LogicOpEnable: false.into(),
             SrcBlend: D3D12_BLEND_ONE,
-            DestBlend: D3D12_BLEND_ZERO,
+            DestBlend: D3D12_BLEND_INV_SRC_ALPHA,
             BlendOp: D3D12_BLEND_OP_ADD,
             SrcBlendAlpha: D3D12_BLEND_ONE,
-            DestBlendAlpha: D3D12_BLEND_ZERO,
+            DestBlendAlpha: D3D12_BLEND_ONE,
             BlendOpAlpha: D3D12_BLEND_OP_ADD,
             LogicOp: D3D12_LOGIC_OP_NOOP,
             RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
@@ -509,20 +521,6 @@ impl Shader {
 
         let mut render_target_formats = [DXGI_FORMAT_UNKNOWN; 8];
         render_target_formats[0] = format;
-
-        let gs = {
-            let mut gs = D3D12_SHADER_BYTECODE {
-                pShaderBytecode: std::ptr::null(),
-                BytecodeLength: 0,
-            };
-            if let Some(geometry_shader) = geometry_shader {
-                gs = D3D12_SHADER_BYTECODE {
-                    pShaderBytecode: geometry_shader.as_ptr().cast(),
-                    BytecodeLength: geometry_shader.len(),
-                };
-            }
-            gs
-        };
 
         let pipeline_info = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
             pRootSignature: windows::core::ManuallyDrop::new(&root_signature),
@@ -534,7 +532,6 @@ impl Shader {
                 pShaderBytecode: pixel_shader.as_ptr().cast(),
                 BytecodeLength: pixel_shader.len(),
             },
-            GS: gs,
             BlendState: D3D12_BLEND_DESC {
                 AlphaToCoverageEnable: false.into(),
                 IndependentBlendEnable: false.into(),
@@ -604,5 +601,33 @@ impl Shader {
             command_list.SetPipelineState(&self.pipeline_state);
             command_list.SetGraphicsRootSignature(&self.root_signature);
         }
+    }
+}
+
+fn vertex_input(
+    name: PCSTR,
+    index: u32,
+    format: DXGI_FORMAT,
+    slot: u32,
+) -> D3D12_INPUT_ELEMENT_DESC {
+    D3D12_INPUT_ELEMENT_DESC {
+        SemanticName: name,
+        SemanticIndex: index,
+        Format: format,
+        InputSlot: slot,
+        AlignedByteOffset: D3D12_APPEND_ALIGNED_ELEMENT,
+        InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+        InstanceDataStepRate: 0,
+    }
+}
+
+fn vertex_buffer_view<T: Copy>(
+    heap: &ID3D12Resource,
+    allocation: &Allocation,
+) -> D3D12_VERTEX_BUFFER_VIEW {
+    D3D12_VERTEX_BUFFER_VIEW {
+        BufferLocation: unsafe { heap.GetGPUVirtualAddress() } + allocation.heap_offset,
+        SizeInBytes: u32::try_from(allocation.size).unwrap(),
+        StrideInBytes: u32::try_from(std::mem::size_of::<T>()).unwrap(),
     }
 }

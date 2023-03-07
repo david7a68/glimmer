@@ -6,6 +6,7 @@ use windows::{s, w};
 enum ShaderKind {
     Vertex,
     Pixel,
+    Geometry,
 }
 
 fn main() {
@@ -27,6 +28,19 @@ fn compile_shaders() {
         s!("pixel_main"),
         "polygon_ps.cso",
     );
+
+    compile(
+        w!("shaders/rounded_rect.hlsl"),
+        ShaderKind::Vertex,
+        s!("vertex_main"),
+        "rect_vs.cso",
+    );
+    compile(
+        w!("shaders/rounded_rect.hlsl"),
+        ShaderKind::Pixel,
+        s!("pixel_main"),
+        "rect_ps.cso",
+    );
 }
 
 fn compile(
@@ -45,6 +59,7 @@ fn compile(
     let shader = match kind {
         ShaderKind::Vertex => s!("vs_5_1"),
         ShaderKind::Pixel => s!("ps_5_1"),
+        ShaderKind::Geometry => s!("gs_5_1"),
     };
 
     let flags = if cfg!(debug_assertions) {
