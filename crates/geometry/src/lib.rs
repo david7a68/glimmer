@@ -327,6 +327,7 @@ impl<T: num::Num, Unit> Div<T> for Extent<T, Unit> {
 }
 
 #[repr(C)]
+#[derive(Clone)]
 pub struct Rect<T: num::Num, Unit = UndefinedUnit> {
     pub p0: Point<T, Unit>,
     pub p1: Point<T, Unit>,

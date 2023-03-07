@@ -38,7 +38,7 @@
 
 use std::cell::RefCell;
 
-use geometry::{Extent, Point};
+use geometry::{Extent, Point, Rect};
 use pixel_buffer::PixelBufferRef;
 use raw_window_handle::HasRawWindowHandle;
 
@@ -128,6 +128,160 @@ pub struct RoundedRectVertex {
     pub color: Color,
 }
 
+pub enum RectPart<T> {
+    Left(T),
+    Right(T),
+    Top(T),
+    Bottom(T),
+    TopLeft(T),
+    TopRight(T),
+    BottomLeft(T),
+    BottomRight(T),
+}
+
+pub use RectPart::*;
+
+#[derive(Clone)]
+pub struct DrawRect {
+    rect: Rect<f32>,
+    // top-left, top-right, bottom-left, bottom-right
+    colors: [Color; 4],
+    outer_radii: [f32; 4],
+    inner_radii: [f32; 4],
+    image: Option<(Image, [Point<f32>; 4])>,
+}
+
+impl DrawRect {
+    pub fn new(rect: Rect<f32>) -> Self {
+        Self {
+            rect,
+            colors: [Color::BLACK; 4],
+            outer_radii: [0.0; 4],
+            inner_radii: [0.0; 4],
+            image: None,
+        }
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.colors = [color; 4];
+        self
+    }
+
+    pub fn with_colors<const N: usize>(mut self, parts: [RectPart<Color>; N]) -> Self {
+        for part in parts {
+            match part {
+                RectPart::Left(color) => {
+                    self.colors[0] = color;
+                    self.colors[3] = color;
+                }
+                RectPart::Right(color) => {
+                    self.colors[1] = color;
+                    self.colors[2] = color;
+                }
+                RectPart::Top(color) => {
+                    self.colors[0] = color;
+                    self.colors[1] = color;
+                }
+                RectPart::Bottom(color) => {
+                    self.colors[2] = color;
+                    self.colors[3] = color;
+                }
+                RectPart::TopLeft(color) => self.colors[0] = color,
+                RectPart::TopRight(color) => self.colors[1] = color,
+                RectPart::BottomLeft(color) => self.colors[2] = color,
+                RectPart::BottomRight(color) => self.colors[3] = color,
+            }
+        }
+
+        self
+    }
+
+    pub fn with_radius(mut self, radius: f32) -> Self {
+        self.outer_radii = [radius; 4];
+        self
+    }
+
+    pub fn with_radii<const N: usize>(mut self, parts: [RectPart<f32>; N]) -> Self {
+        for part in parts {
+            match part {
+                RectPart::Left(radius) => {
+                    self.outer_radii[2] = radius;
+                    self.outer_radii[3] = radius;
+                }
+                RectPart::Right(radius) => {
+                    self.outer_radii[0] = radius;
+                    self.outer_radii[1] = radius;
+                }
+                RectPart::Top(radius) => {
+                    self.outer_radii[1] = radius;
+                    self.outer_radii[3] = radius;
+                }
+                RectPart::Bottom(radius) => {
+                    self.outer_radii[0] = radius;
+                    self.outer_radii[2] = radius;
+                }
+                RectPart::TopLeft(radius) => self.outer_radii[3] = radius,
+                RectPart::TopRight(radius) => self.outer_radii[1] = radius,
+                RectPart::BottomLeft(radius) => self.outer_radii[2] = radius,
+                RectPart::BottomRight(radius) => self.outer_radii[0] = radius,
+            }
+        }
+
+        self
+    }
+
+    pub(crate) fn to_vertices(&self) -> ([RoundedRectVertex; 4], [u16; 6]) {
+        let Self {
+            rect,
+            colors,
+            outer_radii,
+            inner_radii,
+            image: _,
+        } = self;
+
+        let rect_center = rect.center();
+
+        let vertices = [
+            RoundedRectVertex {
+                position: rect.top_left(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: *outer_radii,
+                inner_radii: *inner_radii,
+                color: colors[0],
+            },
+            RoundedRectVertex {
+                position: rect.top_right(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: *outer_radii,
+                inner_radii: *inner_radii,
+                color: colors[1],
+            },
+            RoundedRectVertex {
+                position: rect.bottom_right(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: *outer_radii,
+                inner_radii: *inner_radii,
+                color: colors[2],
+            },
+            RoundedRectVertex {
+                position: rect.bottom_left(),
+                rect_size: rect.extent(),
+                rect_center,
+                outer_radii: *outer_radii,
+                inner_radii: *inner_radii,
+                color: colors[3],
+            },
+        ];
+
+        let indices = [0, 1, 2, 0, 2, 3];
+
+        (vertices, indices)
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PowerPreference {
     #[default]
@@ -210,6 +364,7 @@ pub struct RenderTarget<'a> {
 }
 
 #[repr(transparent)]
+#[derive(Clone)]
 pub struct Image {
     handle: Handle<platform::Image>,
 }

@@ -1,6 +1,6 @@
 use geometry::Rect;
 
-use crate::{Color, RoundedRectVertex, Vertex};
+use crate::{Color, DrawRect, RoundedRectVertex, Vertex};
 
 #[allow(clippy::module_name_repetitions)]
 #[repr(u16)]
@@ -123,6 +123,38 @@ impl RenderGraph {
             first_child: 0,
             last_child: 0,
             command: RenderGraphCommand::DrawImmediate {
+                first_index: first_index as u16,
+                num_indices: indices.len() as u16,
+            },
+        });
+
+        let parent = &mut self.nodes[parent.index as usize];
+        let prev_sibling = parent.last_child as usize;
+        parent.last_child = node_id;
+
+        if parent.first_child == 0 {
+            parent.first_child = node_id;
+        } else {
+            self.nodes[prev_sibling].next = node_id;
+        }
+    }
+
+    pub fn rect(&mut self, parent: RenderGraphNodeId, rect: &DrawRect) {
+        let (vertices, indices) = rect.to_vertices();
+
+        let vertex_offset = self.imm_rect_vertices.len();
+        self.imm_rect_vertices.extend_from_slice(&vertices);
+
+        let first_index = self.imm_indices.len();
+        self.imm_indices
+            .extend(indices.map(|i| i + vertex_offset as u16));
+
+        let node_id = self.nodes.len() as u16;
+        self.nodes.push(RenderGraphNode {
+            next: 0,
+            first_child: 0,
+            last_child: 0,
+            command: RenderGraphCommand::DrawRect {
                 first_index: first_index as u16,
                 num_indices: indices.len() as u16,
             },

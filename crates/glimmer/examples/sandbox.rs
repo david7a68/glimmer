@@ -2,7 +2,9 @@ use std::rc::Rc;
 
 use geometry::{Extent, Point, Rect, ScreenSpace};
 use graphics::{
-    Color, GraphicsConfig, GraphicsContext, RenderGraph, RenderGraphNodeId, Surface, Vertex,
+    Color, DrawRect, GraphicsConfig, GraphicsContext,
+    RectPart::{Bottom, BottomLeft, BottomRight, Left, Right, Top, TopLeft, TopRight},
+    RenderGraph, RenderGraphNodeId, Surface, Vertex,
 };
 use shell::{
     ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
@@ -143,7 +145,7 @@ impl WindowHandler for AppWindow {
             &[
                 Vertex {
                     position: Point::new(0.0, 0.0),
-                    uv: Point::new(0.5, 0.5),
+                    uv: Point::new(0.0, 0.0),
                     color: Color::RED,
                 },
                 Vertex {
@@ -151,12 +153,12 @@ impl WindowHandler for AppWindow {
                         self.window.extent().width as f32,
                         self.window.extent().height as f32,
                     ),
-                    uv: Point::new(0.75, 0.75),
+                    uv: Point::new(0.0, 0.0),
                     color: Color::GREEN,
                 },
                 Vertex {
                     position: Point::new(0.0, self.window.extent().height as f32),
-                    uv: Point::new(0.0, 0.5),
+                    uv: Point::new(0.0, 0.0),
                     color: Color::BLUE,
                 },
             ],
@@ -168,6 +170,36 @@ impl WindowHandler for AppWindow {
             &Rect::new(Point::new(800.0, 100.0), Point::new(1000.0, 300.0)),
             [Color::RED, Color::GREEN, Color::BLUE, Color::BLACK],
             Some([20.0, 0.0, 300.0, 300.0]),
+        );
+
+        render_graph.rect(
+            RenderGraphNodeId::root(),
+            &DrawRect::new(Rect::new(
+                Point::new(800.0, 100.0),
+                Point::new(1000.0, 300.0),
+            ))
+            .with_colors([
+                TopLeft(Color::RED),
+                TopRight(Color::GREEN),
+                BottomLeft(Color::BLUE),
+                BottomRight(Color::BLACK),
+            ])
+            .with_radii([BottomRight(20.0), Left(300.0)]),
+        );
+
+        render_graph.rect(
+            RenderGraphNodeId::root(),
+            &DrawRect::new(Rect::new(
+                Point::new(400.0, 100.0),
+                Point::new(600.0, 300.0),
+            ))
+            .with_radii([BottomLeft(20.0), Right(300.0)])
+            .with_colors([
+                TopLeft(Color::RED),
+                TopRight(Color::GREEN),
+                BottomLeft(Color::BLUE),
+                BottomRight(Color::BLACK),
+            ]),
         );
 
         self.graphics.draw(&image, &render_graph);
