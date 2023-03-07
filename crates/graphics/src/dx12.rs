@@ -8,6 +8,7 @@ use raw_window_handle::RawWindowHandle;
 use smallvec::SmallVec;
 use windows::{
     core::{Interface, PCSTR},
+    w,
     Win32::{
         Foundation::{GetLastError, HANDLE, HWND},
         Graphics::{
@@ -34,15 +35,17 @@ use windows::{
                     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
                     DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
                 },
-                CreateDXGIFactory2, IDXGIAdapter, IDXGIFactory6, IDXGISwapChain3,
-                DXGI_CREATE_FACTORY_DEBUG, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_GPU_PREFERENCE_UNSPECIFIED,
-                DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
-                DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
-                DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                CreateDXGIFactory2, DXGIGetDebugInterface1, IDXGIAdapter, IDXGIDebug1,
+                IDXGIFactory6, IDXGISwapChain3, DXGI_CREATE_FACTORY_DEBUG, DXGI_DEBUG_ALL,
+                DXGI_DEBUG_RLO_IGNORE_INTERNAL, DXGI_DEBUG_RLO_SUMMARY,
+                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+                DXGI_GPU_PREFERENCE_UNSPECIFIED, DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_NONE,
+                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                DXGI_USAGE_RENDER_TARGET_OUTPUT,
             },
         },
-        System::Threading::{CreateEventW, WaitForSingleObjectEx},
+        System::Threading::{CreateEventW, WaitForSingleObject},
     },
 };
 
@@ -98,20 +101,18 @@ impl GraphicsContext {
 
         unsafe {
             command_list.ResourceBarrier(&barriers[..1]);
-
             command_list.ClearRenderTargetView(target.rtv, [0.5, 0.5, 0.5, 1.0].as_ptr(), &[]);
-
             command_list.ResourceBarrier(&barriers[1..]);
         }
 
-        let fence_value = graphics.submit(allocator, &[command_list], &barriers);
+        let fence_value = graphics.submit(allocator, &[command_list], SmallVec::default());
         target.last_use.set(fence_value);
     }
 }
 
 impl Drop for GraphicsContext {
     fn drop(&mut self) {
-        // no-op
+        self.graphics_queue.borrow_mut().flush();
     }
 }
 
@@ -124,6 +125,7 @@ pub struct Surface {
     flags: DXGI_SWAP_CHAIN_FLAG,
     swapchain: IDXGISwapChain3,
     image_index: u32,
+    frame_counter: Cell<u64>,
     render_targets: [Option<Image>; Surface::BUFFER_COUNT as usize],
     waitable_object: HANDLE,
     rtv_heap: ID3D12DescriptorHeap,
@@ -203,6 +205,7 @@ impl Surface {
             flags,
             swapchain,
             image_index: 0,
+            frame_counter: Cell::new(0),
             render_targets: [Some(a), Some(b)],
             waitable_object,
             rtv_heap,
@@ -212,14 +215,10 @@ impl Surface {
     pub fn resize(&mut self) {
         // make sure that the render targets aren't currently in use
         let mut graphics_queue = self.graphics_queue.borrow_mut();
+        graphics_queue.flush();
 
-        {
-            let a = self.render_targets[0].take().unwrap();
-            let b = self.render_targets[1].take().unwrap();
-            graphics_queue.wait_until(a.last_use.get().max(b.last_use.get()));
-        }
-
-        graphics_queue.release_completed_submissions();
+        let _ = self.render_targets[0].take().unwrap();
+        let _ = self.render_targets[1].take().unwrap();
 
         unsafe {
             self.swapchain.ResizeBuffers(
@@ -243,11 +242,12 @@ impl Surface {
         // block until the next image is available
         //
         // NOTE: should this instead be done just before presenting???
-        unsafe { WaitForSingleObjectEx(self.waitable_object, u32::MAX, false) }
+        unsafe { WaitForSingleObject(self.waitable_object, u32::MAX) }
             .ok()
             .unwrap();
 
         self.image_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() };
+
         SurfaceImage { surface: self }
     }
 
@@ -263,11 +263,11 @@ impl Surface {
                 .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
                 as usize;
 
-            let buffer0 = swapchain.GetBuffer(0).unwrap();
+            let buffer0: ID3D12Resource = swapchain.GetBuffer(0).unwrap();
             let rtv0 = heap_start;
             dx.device.CreateRenderTargetView(&buffer0, None, heap_start);
 
-            let buffer1 = swapchain.GetBuffer(1).unwrap();
+            let buffer1: ID3D12Resource = swapchain.GetBuffer(1).unwrap();
             let rtv1 = D3D12_CPU_DESCRIPTOR_HANDLE {
                 ptr: heap_start.ptr + heap_increment,
             };
@@ -278,6 +278,12 @@ impl Surface {
                     ptr: heap_start.ptr + heap_increment,
                 },
             );
+
+            #[cfg(debug_assertions)]
+            if dx.is_debug {
+                buffer0.SetName(w!("Swapchain Buffer 0")).unwrap();
+                buffer1.SetName(w!("Swapchain Buffer 1")).unwrap();
+            }
 
             [
                 Image {
@@ -295,6 +301,12 @@ impl Surface {
     }
 }
 
+impl Drop for Surface {
+    fn drop(&mut self) {
+        self.graphics_queue.borrow_mut().flush();
+    }
+}
+
 pub struct SurfaceImage<'a> {
     surface: &'a Surface,
 }
@@ -304,6 +316,9 @@ impl SurfaceImage<'_> {
     pub fn present(self) {
         // must check if the window is in windowed mode
 
+        self.surface
+            .frame_counter
+            .set(self.surface.frame_counter.get() + 1);
         // We assume that the window is not typically in borderless fullscreen,
         // and so use a presentation interval of 1 (VSync).
         unsafe { self.surface.swapchain.Present(1, 0) }.unwrap();
@@ -316,7 +331,6 @@ impl SurfaceImage<'_> {
     }
 }
 
-#[derive(Clone)]
 pub struct Image {
     resource: ID3D12Resource,
     last_use: Cell<u64>,
@@ -324,6 +338,7 @@ pub struct Image {
 }
 
 struct Interfaces {
+    is_debug: bool,
     gi: IDXGIFactory6,
     device: ID3D12Device,
 }
@@ -376,6 +391,7 @@ impl Interfaces {
         }
 
         Self {
+            is_debug: config.debug_mode,
             gi,
             device: device.unwrap(),
         }
@@ -388,18 +404,34 @@ impl Interfaces {
         description: PCSTR,
         _context: *mut std::ffi::c_void,
     ) {
-        print!("D3D12: ");
+        println!(
+            "D3D12: {}: {:?} {}",
+            match severity {
+                D3D12_MESSAGE_SEVERITY_CORRUPTION => "Corruption",
+                D3D12_MESSAGE_SEVERITY_ERROR => "Error",
+                D3D12_MESSAGE_SEVERITY_WARNING => "Warning",
+                D3D12_MESSAGE_SEVERITY_INFO => "Info",
+                D3D12_MESSAGE_SEVERITY_MESSAGE => "Message",
+                _ => "Unknown severity",
+            },
+            id,
+            unsafe { description.display() }
+        );
+    }
+}
 
-        match severity {
-            D3D12_MESSAGE_SEVERITY_CORRUPTION => print!("Corruption: "),
-            D3D12_MESSAGE_SEVERITY_ERROR => print!("Error: "),
-            D3D12_MESSAGE_SEVERITY_WARNING => print!("Warning: "),
-            D3D12_MESSAGE_SEVERITY_INFO => print!("Info: "),
-            D3D12_MESSAGE_SEVERITY_MESSAGE => print!("Message: "),
-            _ => print!("Unknown severity: "),
+impl Drop for Interfaces {
+    fn drop(&mut self) {
+        if self.is_debug {
+            let dxgi_debug: IDXGIDebug1 = unsafe { DXGIGetDebugInterface1(0) }.unwrap();
+            unsafe {
+                dxgi_debug.ReportLiveObjects(
+                    DXGI_DEBUG_ALL,
+                    DXGI_DEBUG_RLO_SUMMARY | DXGI_DEBUG_RLO_IGNORE_INTERNAL,
+                )
+            }
+            .unwrap();
         }
-
-        println!("{:?} {}", id, unsafe { description.display() });
     }
 }
 
@@ -423,6 +455,11 @@ impl GraphicsQueue {
             })
         }
         .unwrap();
+
+        #[cfg(debug_assertions)]
+        if dx.is_debug {
+            unsafe { queue.SetName(w!("Graphics Queue")) }.unwrap();
+        }
 
         let fence = unsafe { dx.device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }.unwrap();
         let event = unsafe { CreateEventW(None, false, false, None) }.unwrap();
@@ -468,8 +505,12 @@ impl GraphicsQueue {
         fence_value <= self.last_value.get()
     }
 
-    fn wait_idle(&self) {
-        self.wait_until(self.next_value - 1);
+    fn flush(&mut self) {
+        unsafe { self.queue.Signal(&self.fence, self.next_value).unwrap() };
+        self.wait_until(self.next_value);
+        self.next_value += 1;
+
+        self.release_completed_submissions();
     }
 
     fn wait_until(&self, fence_value: u64) {
@@ -478,7 +519,7 @@ impl GraphicsQueue {
                 self.fence
                     .SetEventOnCompletion(fence_value, self.event)
                     .unwrap();
-                WaitForSingleObjectEx(self.event, u32::MAX, false);
+                WaitForSingleObject(self.event, u32::MAX);
             }
             self.last_value.set(fence_value);
         }
@@ -549,7 +590,7 @@ impl GraphicsQueue {
         &mut self,
         allocator: ID3D12CommandAllocator,
         commands: &[ID3D12GraphicsCommandList],
-        barriers: &[D3D12_RESOURCE_BARRIER],
+        barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
     ) -> u64 {
         unsafe {
             for command in commands {
@@ -557,10 +598,8 @@ impl GraphicsQueue {
             }
 
             // 4 is an arbitrary number
-            let lists: SmallVec<[Option<ID3D12CommandList>; 4]> = commands
-                .iter()
-                .map(|c| Some(c.clone().cast().unwrap()))
-                .collect();
+            let lists: SmallVec<[ID3D12CommandList; 4]> =
+                commands.iter().map(|c| c.clone().cast().unwrap()).collect();
 
             self.queue.ExecuteCommandLists(&lists);
             self.queue.Signal(&self.fence, self.next_value).unwrap();
@@ -573,7 +612,7 @@ impl GraphicsQueue {
         self.submissions.push_back(Submission {
             fence_value: self.next_value,
             command_allocator: allocator,
-            barriers: SmallVec::from_iter(barriers.iter().cloned()),
+            barriers,
         });
 
         let fence_value = self.next_value;
@@ -601,7 +640,7 @@ fn transition_barrier(
                 // Note (2022-12-21): This disagrees with the samples, and
                 // involves a clone that is destroyed immediately upon
                 // submission to a command list. IDK why this is the case.
-                pResource: Some(resource.clone()),
+                pResource: windows::core::ManuallyDrop::new(resource),
                 StateBefore: state_before,
                 StateAfter: state_after,
                 Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
