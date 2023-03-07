@@ -212,6 +212,11 @@ impl Surface {
             )
         }
         .unwrap();
+
+        self.render_targets = [
+            unsafe { self.swapchain.GetBuffer(0) }.unwrap(),
+            unsafe { self.swapchain.GetBuffer(1) }.unwrap(),
+        ];
     }
 
     /// Retrieves the next image in the swap chain.
@@ -219,6 +224,8 @@ impl Surface {
     /// This function will block until the next image is available.
     pub fn get_next_image(&mut self) -> SurfaceImage {
         // block until the next image is available
+        //
+        // NOTE: should this instead be done just before presenting???
         unsafe { WaitForSingleObjectEx(self.waitable_object, u32::MAX, false) };
 
         self.image_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() };
