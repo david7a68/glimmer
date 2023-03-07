@@ -17,7 +17,7 @@ use windows::{
     },
 };
 
-use super::{dx, queue, Image};
+use super::{dx, queue, Descriptor, DescriptorHeap, Image};
 
 /// A `Surface` controls the acquisition and presentation of images to its
 /// associated window.
@@ -31,7 +31,7 @@ pub struct Surface {
     frame_counter: Cell<u64>,
     render_targets: [Option<Image>; Surface::BUFFER_COUNT as usize],
     waitable_object: HANDLE,
-    rtv_heap: ID3D12DescriptorHeap,
+    rtv_heap: DescriptorHeap,
 }
 
 impl Surface {
@@ -90,17 +90,13 @@ impl Surface {
 
         let waitable_object = unsafe { swapchain.GetFrameLatencyWaitableObject() };
 
-        let rtv_heap: ID3D12DescriptorHeap = unsafe {
-            dx.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                NumDescriptors: Self::BUFFER_COUNT,
-                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-                NodeMask: 0,
-            })
-        }
-        .unwrap();
-
-        let [a, b] = Self::get_render_targets(&dx, &swapchain, &rtv_heap);
+        let mut rtv_heap = DescriptorHeap::new(
+            &dx,
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+            Self::BUFFER_COUNT,
+            false,
+        );
+        let [a, b] = Self::get_render_targets(&dx, &swapchain, &mut rtv_heap);
 
         Self {
             dx,
@@ -120,8 +116,12 @@ impl Surface {
         let mut graphics_queue = self.graphics_queue.borrow_mut();
         graphics_queue.flush();
 
-        std::mem::drop(self.render_targets[0].take().unwrap());
-        std::mem::drop(self.render_targets[1].take().unwrap());
+        {
+            let rt = self.render_targets[0].take().unwrap();
+            self.rtv_heap.free(rt.rtv);
+            let rt = self.render_targets[1].take().unwrap();
+            self.rtv_heap.free(rt.rtv);
+        }
 
         unsafe {
             self.swapchain.ResizeBuffers(
@@ -134,7 +134,7 @@ impl Surface {
         }
         .unwrap();
 
-        let [a, b] = Self::get_render_targets(&self.dx, &self.swapchain, &self.rtv_heap);
+        let [a, b] = Self::get_render_targets(&self.dx, &self.swapchain, &mut self.rtv_heap);
         self.render_targets = [Some(a), Some(b)];
     }
 
@@ -157,30 +157,14 @@ impl Surface {
     fn get_render_targets(
         dx: &dx::Interfaces,
         swapchain: &IDXGISwapChain3,
-        rtv_heap: &ID3D12DescriptorHeap,
+        rtv_heap: &mut DescriptorHeap,
     ) -> [Image; 2] {
         unsafe {
-            let heap_start = rtv_heap.GetCPUDescriptorHandleForHeapStart();
-            let heap_increment = dx
-                .device
-                .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
-                as usize;
-
             let buffer0: ID3D12Resource = swapchain.GetBuffer(0).unwrap();
-            let rtv0 = heap_start;
-            dx.device.CreateRenderTargetView(&buffer0, None, heap_start);
+            let rtv0 = rtv_heap.create_render_target_view(dx, &buffer0, None);
 
             let buffer1: ID3D12Resource = swapchain.GetBuffer(1).unwrap();
-            let rtv1 = D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: heap_start.ptr + heap_increment,
-            };
-            dx.device.CreateRenderTargetView(
-                &buffer1,
-                None, // default render target view
-                D3D12_CPU_DESCRIPTOR_HANDLE {
-                    ptr: heap_start.ptr + heap_increment,
-                },
-            );
+            let rtv1 = rtv_heap.create_render_target_view(dx, &buffer1, None);
 
             #[cfg(debug_assertions)]
             if dx.is_debug {
@@ -193,13 +177,13 @@ impl Surface {
                     resource: buffer0,
                     last_use: Cell::new(0),
                     rtv: rtv0,
-                    srv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+                    srv: Descriptor::default(),
                 },
                 Image {
                     resource: buffer1,
                     last_use: Cell::new(0),
                     rtv: rtv1,
-                    srv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+                    srv: Descriptor::default(),
                 },
             ]
         }

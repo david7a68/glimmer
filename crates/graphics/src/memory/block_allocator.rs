@@ -2,20 +2,20 @@ use super::HeapOffset;
 
 use super::Error;
 
-pub struct BlockAllocator<const MAX_BLOCKS: usize> {
-    blocks: [Block; MAX_BLOCKS],
+pub struct BlockAllocator {
+    blocks: Box<[Block]>,
     block_size: HeapOffset,
     first_free_block: usize,
 }
 
-impl<const MAX_BLOCKS: usize> BlockAllocator<MAX_BLOCKS> {
-    pub fn new(block_size: HeapOffset) -> Self {
+impl BlockAllocator {
+    pub fn new(block_size: HeapOffset, max_blocks: u32) -> Self {
         assert!(block_size.0 > 0);
-        assert!((block_size.0 * MAX_BLOCKS as u64) < u64::MAX);
+        assert!((block_size.0 * max_blocks as u64) < u64::MAX);
 
         // This might overflow the stack, but it's fine for now. If this becomes
         // a problem, just turn this into a Box<[Block]>.
-        let mut blocks = [Block::default(); MAX_BLOCKS];
+        let mut blocks = vec![Block::default(); max_blocks as usize].into_boxed_slice();
         for (i, block) in blocks.iter_mut().enumerate() {
             block.start = HeapOffset(i as u64 * block_size.0);
             block.next = i + 1;
@@ -34,7 +34,11 @@ impl<const MAX_BLOCKS: usize> BlockAllocator<MAX_BLOCKS> {
             self.first_free_block = block.next;
             Ok(block.start)
         } else {
-            Err(Error::OutOfMemory)
+            Err(Error::OutOfMemory {
+                capacity: self.blocks.len() as u64,
+                available: 0,
+                requested: 1,
+            })
         }
     }
 
@@ -62,7 +66,7 @@ mod tests {
 
     #[test]
     fn test() {
-        let mut allocator = BlockAllocator::<4>::new(HeapOffset(8));
+        let mut allocator = BlockAllocator::new(HeapOffset(8), 4);
 
         let a0 = allocator.allocate().unwrap();
         let a1 = allocator.allocate().unwrap();
@@ -74,17 +78,31 @@ mod tests {
         assert_eq!(a2, HeapOffset(16));
         assert_eq!(a3, HeapOffset(24));
 
-        assert_eq!(allocator.allocate(), Err(Error::OutOfMemory));
+        assert_eq!(
+            allocator.allocate(),
+            Err(Error::OutOfMemory {
+                capacity: 4,
+                available: 0,
+                requested: 1,
+            })
+        );
 
         allocator.free(a1);
-        allocator.free(a3);
+        allocator.free(a2);
 
         let a1 = allocator.allocate().unwrap();
-        let a3 = allocator.allocate().unwrap();
+        let a2 = allocator.allocate().unwrap();
 
-        assert_eq!(a1, HeapOffset(24));
-        assert_eq!(a3, HeapOffset(8));
+        assert_eq!(a1, HeapOffset(16));
+        assert_eq!(a2, HeapOffset(8));
 
-        assert_eq!(allocator.allocate(), Err(Error::OutOfMemory));
+        assert_eq!(
+            allocator.allocate(),
+            Err(Error::OutOfMemory {
+                capacity: 4,
+                available: 0,
+                requested: 1,
+            })
+        );
     }
 }

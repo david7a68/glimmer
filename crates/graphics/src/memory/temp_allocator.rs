@@ -65,7 +65,12 @@ impl<'a> FrameAllocator<'a> {
                 }
             }
         }
-        .ok_or(Error::OutOfMemory)?;
+        .ok_or(Error::OutOfMemory {
+            capacity: self.allocator.capacity,
+            available: self.allocator.capacity
+                - (self.bytes_allocated - self.allocator.bytes_freed),
+            requested: size,
+        })?;
 
         let (adjust_amount, heap_ptr) = match adjust_amount {
             Adjust::Align => (aligned_ptr - base_ptr, aligned_ptr),

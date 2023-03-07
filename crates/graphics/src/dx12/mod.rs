@@ -84,8 +84,7 @@ pub struct GraphicsContext {
     upload_buffer: ID3D12Resource,
     upload_allocator: temp_allocator::Allocator,
 
-    descriptor_heap: ID3D12DescriptorHeap,
-    descriptor_allocator: BlockAllocator<{ Self::MAX_TEXTURES as usize }>,
+    descriptor_heap: DescriptorHeap,
 
     unused_frames: Vec<Frame>,
     frames_in_flight: VecDeque<FrameInFlight>,
@@ -121,25 +120,12 @@ impl GraphicsContext {
             temp_allocator::Allocator::new(Self::UPLOAD_BUFFER_SIZE, NonNull::new(ptr.cast()))
         };
 
-        let descriptor_heap = {
-            let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: Self::MAX_TEXTURES,
-                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                NodeMask: 0,
-            };
-
-            unsafe { dx.device.CreateDescriptorHeap(&heap_desc) }.unwrap()
-        };
-
-        let descriptor_allocator = {
-            let descriptor_size = unsafe {
-                dx.device
-                    .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-            } as u64;
-
-            BlockAllocator::<{ Self::MAX_TEXTURES as usize }>::new(HeapOffset(descriptor_size))
-        };
+        let descriptor_heap = DescriptorHeap::new(
+            &dx,
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            Self::MAX_TEXTURES,
+            true,
+        );
 
         Self {
             dx: Rc::new(dx),
@@ -150,7 +136,6 @@ impl GraphicsContext {
             upload_buffer,
             upload_allocator,
             descriptor_heap,
-            descriptor_allocator,
             unused_frames: Vec::new(),
             frames_in_flight: VecDeque::new(),
         }
@@ -191,49 +176,13 @@ impl GraphicsContext {
         };
 
         let _white_pixel = self.white_pixel.get_or_insert_with(|| {
-            let resource = create_white_pixel(
+            create_white_pixel(
                 &self.dx,
                 &frame.command_list,
                 &self.upload_buffer,
                 &mut frame_alloc,
-            );
-
-            let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                Format: DXGI_FORMAT_R8G8B8A8_UINT,
-                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_SRV {
-                        MostDetailedMip: 0,
-                        MipLevels: 1,
-                        PlaneSlice: 0,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                },
-            };
-
-            let srv_offset = self.descriptor_allocator.allocate().unwrap();
-
-            let srv = unsafe {
-                let srv = D3D12_CPU_DESCRIPTOR_HANDLE {
-                    ptr: self
-                        .descriptor_heap
-                        .GetCPUDescriptorHandleForHeapStart()
-                        .ptr
-                        + srv_offset.0 as usize,
-                };
-                self.dx
-                    .device
-                    .CreateShaderResourceView(&resource, Some(&desc), srv);
-                srv
-            };
-
-            Image {
-                resource,
-                last_use: Cell::new(0),
-                rtv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
-                srv,
-            }
+                &mut self.descriptor_heap,
+            )
         });
 
         let frame_marker = frame_alloc.finish();
@@ -247,10 +196,10 @@ impl GraphicsContext {
 
             frame
                 .command_list
-                .OMSetRenderTargets(1, Some(&target.rtv), false, None);
+                .OMSetRenderTargets(1, Some(&target.rtv.cpu), false, None);
 
             frame.command_list.ClearRenderTargetView(
-                target.rtv,
+                target.rtv.cpu,
                 [1.0, 1.0, 1.0, 1.0].as_ptr(),
                 &[],
             );
@@ -277,14 +226,20 @@ impl GraphicsContext {
                 bottom: constants.viewport.height.try_into().unwrap(),
             }]);
 
+            let render_data = RenderData {
+                constants,
+                white_pixel: self.white_pixel.as_ref().unwrap(),
+                descriptor_heap: &self.descriptor_heap,
+                index_buffer: imm_index_view,
+                poly_vertex_buffer: imm_vertex_view,
+                rect_vertex_buffer: imm_rect_view,
+            };
+
             self.record_render_graph(
                 &frame.command_list,
                 content,
                 RenderGraphNodeId::root(),
-                &constants,
-                &imm_rect_view,
-                &imm_index_view,
-                &imm_vertex_view,
+                &render_data,
             );
 
             frame.command_list.ResourceBarrier(&[transition_barrier(
@@ -362,13 +317,10 @@ impl GraphicsContext {
         command_list: &ID3D12GraphicsCommandList,
         content: &RenderGraph,
         node_id: RenderGraphNodeId,
-        constants: &ShaderConstants,
-        imm_rect_view: &D3D12_VERTEX_BUFFER_VIEW,
-        imm_index_view: &D3D12_INDEX_BUFFER_VIEW,
-        imm_vertex_view: &D3D12_VERTEX_BUFFER_VIEW,
+        data: &RenderData,
     ) {
         'draw: {
-            let (first_index, num_indices, shader, vertex_view) = match content.get(node_id) {
+            let (first_index, num_indices) = match content.get(node_id) {
                 RenderGraphCommand::Root => {
                     assert_eq!(node_id, RenderGraphNodeId::root());
                     break 'draw;
@@ -376,24 +328,34 @@ impl GraphicsContext {
                 RenderGraphCommand::DrawImmediate {
                     first_index,
                     num_indices,
-                } => (
-                    *first_index,
-                    *num_indices,
-                    &self.polygon_shader,
-                    imm_vertex_view,
-                ),
+                } => {
+                    self.polygon_shader.bind(
+                        command_list,
+                        &data.constants,
+                        &data.poly_vertex_buffer,
+                        &data.index_buffer,
+                    );
+
+                    unsafe {
+                        command_list.SetDescriptorHeaps(&[data.descriptor_heap.heap.clone()]);
+                        command_list.SetGraphicsRootDescriptorTable(1, data.white_pixel.srv.gpu);
+                    }
+
+                    (*first_index, *num_indices)
+                }
                 RenderGraphCommand::DrawRect {
                     first_index,
                     num_indices,
-                } => (
-                    *first_index,
-                    *num_indices,
-                    &self.round_rect_shader,
-                    imm_rect_view,
-                ),
+                } => {
+                    self.round_rect_shader.bind(
+                        command_list,
+                        &data.constants,
+                        &data.rect_vertex_buffer,
+                        &data.index_buffer,
+                    );
+                    (*first_index, *num_indices)
+                }
             };
-
-            shader.bind(command_list, constants, vertex_view, imm_index_view);
 
             unsafe {
                 command_list.DrawIndexedInstanced(
@@ -407,15 +369,7 @@ impl GraphicsContext {
         }
 
         for child in content.iter_children(node_id) {
-            self.record_render_graph(
-                command_list,
-                content,
-                child,
-                constants,
-                imm_rect_view,
-                imm_index_view,
-                imm_vertex_view,
-            );
+            self.record_render_graph(command_list, content, child, data);
         }
     }
 }
@@ -429,8 +383,8 @@ impl Drop for GraphicsContext {
 pub struct Image {
     resource: ID3D12Resource,
     last_use: Cell<u64>,
-    rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
-    srv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    rtv: Descriptor,
+    srv: Descriptor,
 }
 
 fn transition_barrier(
@@ -635,6 +589,15 @@ impl<Constants: PushConstants> Shader<Constants> {
     }
 }
 
+struct RenderData<'a> {
+    constants: ShaderConstants,
+    white_pixel: &'a Image,
+    descriptor_heap: &'a DescriptorHeap,
+    index_buffer: D3D12_INDEX_BUFFER_VIEW,
+    poly_vertex_buffer: D3D12_VERTEX_BUFFER_VIEW,
+    rect_vertex_buffer: D3D12_VERTEX_BUFFER_VIEW,
+}
+
 fn create_buffer(
     dx: &dx::Interfaces,
     heap: D3D12_HEAP_TYPE,
@@ -709,7 +672,8 @@ fn create_white_pixel(
     command_list: &ID3D12GraphicsCommandList,
     upload_heap: &ID3D12Resource,
     upload_memory: &mut temp_allocator::FrameAllocator,
-) -> ID3D12Resource {
+    descriptor_heap: &mut DescriptorHeap,
+) -> Image {
     let desc = D3D12_RESOURCE_DESC {
         Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
         Alignment: 0,
@@ -745,9 +709,9 @@ fn create_white_pixel(
             )
             .unwrap();
     }
-    let image = image.unwrap();
+    let resource = image.unwrap();
 
-    let upload_allocation = upload_memory.upload(&[255, 255, 255, 255]).unwrap();
+    let upload_allocation = upload_memory.upload::<u8>(&[255, 255, 255, 255]).unwrap();
 
     let placed_desc = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
         Offset: upload_allocation.heap_offset,
@@ -763,7 +727,7 @@ fn create_white_pixel(
     unsafe {
         command_list.CopyTextureRegion(
             &D3D12_TEXTURE_COPY_LOCATION {
-                pResource: windows::core::ManuallyDrop::new(&image),
+                pResource: windows::core::ManuallyDrop::new(&resource),
                 Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
                 Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                     SubresourceIndex: 0,
@@ -783,11 +747,144 @@ fn create_white_pixel(
         );
 
         command_list.ResourceBarrier(&[transition_barrier(
-            &image,
+            &resource,
             D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         )]);
     }
 
-    image
+    let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_R8G8B8A8_UINT,
+        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+            Texture2D: D3D12_TEX2D_SRV {
+                MostDetailedMip: 0,
+                MipLevels: 1,
+                PlaneSlice: 0,
+                ResourceMinLODClamp: 0.0,
+            },
+        },
+    };
+
+    let srv = descriptor_heap.create_shader_resource_view(dx, &resource, &srv_desc);
+
+    Image {
+        resource,
+        last_use: Cell::new(0),
+        rtv: Descriptor::default(),
+        srv,
+    }
+}
+
+#[derive(Debug, Default)]
+struct Descriptor {
+    cpu: D3D12_CPU_DESCRIPTOR_HANDLE,
+    gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
+}
+
+struct DescriptorHeap {
+    heap: ID3D12DescriptorHeap,
+    kind: D3D12_DESCRIPTOR_HEAP_TYPE,
+    cpu_start: u64,
+    gpu_start: u64,
+    allocator: BlockAllocator,
+}
+
+impl DescriptorHeap {
+    fn new(
+        dx: &dx::Interfaces,
+        kind: D3D12_DESCRIPTOR_HEAP_TYPE,
+        max_descriptors: u32,
+        is_shader_visible: bool,
+    ) -> Self {
+        let desc = D3D12_DESCRIPTOR_HEAP_DESC {
+            Type: kind,
+            NumDescriptors: max_descriptors,
+            Flags: if is_shader_visible {
+                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
+            } else {
+                D3D12_DESCRIPTOR_HEAP_FLAG_NONE
+            },
+            NodeMask: 0,
+        };
+
+        let heap: ID3D12DescriptorHeap = unsafe { dx.device.CreateDescriptorHeap(&desc) }.unwrap();
+
+        let cpu_start = unsafe { heap.GetCPUDescriptorHandleForHeapStart().ptr } as u64;
+        let gpu_start = if is_shader_visible {
+            unsafe { heap.GetGPUDescriptorHandleForHeapStart().ptr }
+        } else {
+            0
+        };
+
+        let allocator = BlockAllocator::new(
+            HeapOffset(unsafe { dx.device.GetDescriptorHandleIncrementSize(kind) } as u64),
+            max_descriptors,
+        );
+
+        Self {
+            kind,
+            heap,
+            cpu_start,
+            gpu_start,
+            allocator,
+        }
+    }
+
+    fn free(&mut self, descriptor: Descriptor) {
+        let offset =
+            unsafe { descriptor.cpu.ptr - self.heap.GetCPUDescriptorHandleForHeapStart().ptr };
+        self.allocator.free(HeapOffset(offset as u64));
+    }
+
+    fn create_shader_resource_view(
+        &mut self,
+        dx: &dx::Interfaces,
+        resource: &ID3D12Resource,
+        desc: &D3D12_SHADER_RESOURCE_VIEW_DESC,
+    ) -> Descriptor {
+        debug_assert_eq!(self.kind, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        let offset = self.allocator.allocate().unwrap();
+        let handle = {
+            Descriptor {
+                cpu: D3D12_CPU_DESCRIPTOR_HANDLE {
+                    ptr: (self.cpu_start + offset.0) as usize,
+                },
+                gpu: D3D12_GPU_DESCRIPTOR_HANDLE {
+                    ptr: self.gpu_start + offset.0,
+                },
+            }
+        };
+
+        unsafe {
+            dx.device
+                .CreateShaderResourceView(resource, Some(desc), handle.cpu);
+        }
+        handle
+    }
+
+    fn create_render_target_view(
+        &mut self,
+        dx: &dx::Interfaces,
+        resource: &ID3D12Resource,
+        desc: Option<*const D3D12_RENDER_TARGET_VIEW_DESC>,
+    ) -> Descriptor {
+        debug_assert_eq!(self.kind, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        let offset = self.allocator.allocate().unwrap();
+        let handle = {
+            Descriptor {
+                cpu: D3D12_CPU_DESCRIPTOR_HANDLE {
+                    ptr: (self.cpu_start + offset.0) as usize,
+                },
+                gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
+            }
+        };
+
+        unsafe {
+            dx.device.CreateRenderTargetView(resource, desc, handle.cpu);
+        }
+        handle
+    }
 }

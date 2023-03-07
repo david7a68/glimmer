@@ -1,5 +1,15 @@
 #define RS "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), \
-                       RootConstants(num32BitConstants = 2, b0)"
+            RootConstants(num32BitConstants = 2, b0), \
+            StaticSampler( \
+                s0, \
+                comparisonFunc = COMPARISON_ALWAYS, \
+                borderColor = STATIC_BORDER_COLOR_OPAQUE_BLACK, \
+                visibility = SHADER_VISIBILITY_PIXEL \
+            ), \
+            DescriptorTable( \
+                SRV(t0, numDescriptors = 1), \
+                visibility = SHADER_VISIBILITY_PIXEL \
+            )"
 
 struct DrawConstants
 {
@@ -9,6 +19,9 @@ struct DrawConstants
 
 // Constants set by the root signature
 ConstantBuffer<DrawConstants> draw_constants : register(b0);
+
+Texture2D texture0 : register(t0);
+SamplerState sampler0 : register(s0);
 
 struct VsInput
 {
@@ -40,5 +53,12 @@ PsInput vertex_main(VsInput input)
 
 float4 pixel_main(PsInput input) : SV_TARGET
 {
-    return input.color;
+    float4 sampled_color = texture0.Sample(sampler0, input.uv);
+
+    float4 final_color = input.color * sampled_color;
+
+    // return input.color;
+    return final_color;
+    // return texture0.Sample(sampler0, input.uv);
+    // return float4(input.uv.x, input.uv.y, 0.0f, 1.0f);
 }
