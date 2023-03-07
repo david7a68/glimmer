@@ -1,14 +1,17 @@
 use std::rc::Rc;
 
 use geometry::{Extent, Point, ScreenSpace};
-use graphics::{GraphicsConfig, GraphicsContext, Surface};
+use graphics::{GraphicsConfig, GraphicsContext, RenderGraph, Surface};
 use shell::{
     ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
     WindowSpawner,
 };
 
 fn main() {
-    let graphics = Rc::new(GraphicsContext::new(&GraphicsConfig::default()));
+    let graphics = Rc::new(GraphicsContext::new(&GraphicsConfig {
+        debug_mode: true,
+        ..Default::default()
+    }));
 
     let main_window = WindowDesc {
         title: "Sandbox",
@@ -131,6 +134,11 @@ impl WindowHandler for AppWindow {
 
     fn on_redraw(&mut self, _control: &mut dyn WindowSpawner<Self>) {
         let image = self.surface.get_next_image();
+
+        let render_graph = RenderGraph::new();
+
+        self.graphics.draw(image.image(), &render_graph);
+
         image.present();
     }
 }

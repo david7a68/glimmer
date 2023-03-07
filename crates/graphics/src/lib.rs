@@ -34,13 +34,19 @@
 //!
 //! - 2022-12-19: Work begins after a few false starts.
 
-use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+use std::cell::RefCell;
+
+use raw_window_handle::HasRawWindowHandle;
+
+mod render_graph;
 
 #[cfg(target_os = "windows")]
 mod dx12;
 
 #[cfg(target_os = "windows")]
 use dx12 as platform;
+
+pub use render_graph::RenderGraph;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PowerPreference {
@@ -59,20 +65,27 @@ pub struct GraphicsConfig {
 }
 
 pub struct GraphicsContext {
-    inner: platform::GraphicsContext,
+    inner: RefCell<platform::GraphicsContext>,
 }
 
 impl GraphicsContext {
     pub fn new(config: &GraphicsConfig) -> Self {
         Self {
-            inner: platform::GraphicsContext::new(config),
+            inner: RefCell::new(platform::GraphicsContext::new(config)),
         }
     }
 
     pub fn create_surface(&self, window: impl HasRawWindowHandle) -> Surface {
         Surface {
-            inner: self.inner.create_surface(window.raw_window_handle()),
+            inner: self
+                .inner
+                .borrow()
+                .create_surface(window.raw_window_handle()),
         }
+    }
+
+    pub fn draw(&self, target: &Image, content: &RenderGraph) {
+        self.inner.borrow_mut().draw(&target.inner, content);
     }
 }
 
@@ -104,4 +117,14 @@ impl<'a> SurfaceImage<'a> {
     pub fn present(self) {
         self.inner.present()
     }
+
+    pub fn image(&self) -> &Image {
+        // This is safe as long as Image remains repr(transparent).
+        unsafe { std::mem::transmute(self.inner.get_image()) }
+    }
+}
+
+#[repr(transparent)]
+pub struct Image {
+    inner: platform::Image,
 }
