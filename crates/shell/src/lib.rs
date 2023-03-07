@@ -200,7 +200,7 @@ pub struct WindowId(winit::window::WindowId);
 /// Trait for handling window events.
 pub trait WindowHandler {
     /// Called when the window is first created.
-    fn on_create(&mut self, control: &mut dyn WindowControl, id: WindowId, handle: RawWindowHandle);
+    fn on_create(&mut self, control: &mut dyn WindowControl, window: Window);
 
     /// Called when the window is destroyed. This is the last event that will be
     /// received by the window handler before it is dropped.
@@ -247,9 +247,9 @@ pub trait WindowHandler {
 
 /// Trait for feeding back window control to the shell.
 pub trait WindowControl {
-    fn destroy(&mut self, window: WindowId);
-
     fn spawn(&mut self, desc: WindowDesc);
+
+    fn destroy(&mut self, window: WindowId);
 }
 
 /// A description of a window. Pass this in to the `spawn` method of a
@@ -271,9 +271,9 @@ impl<'a> WindowDesc<'a> {
     fn build(
         mut self,
         target: &winit::event_loop::EventLoopWindowTarget<()>,
-        buffered_creates: &'a mut Vec<(winit::window::Window, WindowState)>,
+        buffered_creates: &'a mut Vec<WindowState>,
         buffered_destroys: &'a mut Vec<WindowId>,
-    ) -> (winit::window::Window, WindowState) {
+    ) -> WindowState {
         let mut builder = winit::window::WindowBuilder::new()
             .with_title(self.title)
             .with_inner_size(as_logical_size(self.size))
@@ -295,26 +295,45 @@ impl<'a> WindowDesc<'a> {
         }
 
         let window = builder.build(target).unwrap();
+        let id = window.id();
 
         // Inform the handler that the window has been created.
         self.handler.on_create(
             &mut Control::new(target, buffered_creates, buffered_destroys),
-            WindowId(window.id()),
-            window.raw_window_handle(),
+            Window { inner: window },
         );
 
-        (
-            window,
-            WindowState {
-                handler: self.handler,
-                cursor_position: Point::zero(),
-                repeated_key: None,
-            },
-        )
+        WindowState {
+            id,
+            handler: self.handler,
+            cursor_position: Point::zero(),
+            repeated_key: None,
+        }
+    }
+}
+
+pub struct Window {
+    inner: winit::window::Window,
+}
+
+unsafe impl HasRawWindowHandle for Window {
+    fn raw_window_handle(&self) -> RawWindowHandle {
+        self.inner.raw_window_handle()
+    }
+}
+
+impl Window {
+    pub fn id(&self) -> WindowId {
+        WindowId(self.inner.id())
+    }
+
+    pub fn set_title(&mut self, title: &str) {
+        self.inner.set_title(title);
     }
 }
 
 struct WindowState {
+    id: winit::window::WindowId,
     handler: Box<dyn WindowHandler>,
     cursor_position: Point<i32>,
     repeated_key: Option<(winit::event::KeyboardInput, u16)>,
@@ -322,14 +341,14 @@ struct WindowState {
 
 struct Control<'a> {
     event_loop: &'a winit::event_loop::EventLoopWindowTarget<()>,
-    buffered_creates: &'a mut Vec<(winit::window::Window, WindowState)>,
+    buffered_creates: &'a mut Vec<WindowState>,
     buffered_destroys: &'a mut Vec<WindowId>,
 }
 
 impl<'a> Control<'a> {
     fn new(
         event_loop: &'a winit::event_loop::EventLoopWindowTarget<()>,
-        buffered_creates: &'a mut Vec<(winit::window::Window, WindowState)>,
+        buffered_creates: &'a mut Vec<WindowState>,
         buffered_destroys: &'a mut Vec<WindowId>,
     ) -> Self {
         Self {
@@ -341,17 +360,17 @@ impl<'a> Control<'a> {
 }
 
 impl<'a> WindowControl for Control<'a> {
-    fn destroy(&mut self, window: WindowId) {
-        self.buffered_destroys.push(window);
-    }
-
     fn spawn(&mut self, desc: WindowDesc) {
-        let (window, state) = desc.build(
+        let window = desc.build(
             self.event_loop,
             self.buffered_creates,
             self.buffered_destroys,
         );
-        self.buffered_creates.push((window, state));
+        self.buffered_creates.push(window);
+    }
+
+    fn destroy(&mut self, window: WindowId) {
+        self.buffered_destroys.push(window);
     }
 }
 
@@ -369,16 +388,16 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
     let mut buffered_window_destroys = Vec::new();
 
     for desc in window_descs {
-        let (window, state) = desc.build(
+        let window = desc.build(
             &event_loop,
             &mut buffered_window_creates,
             &mut buffered_window_destroys,
         );
-        windows.insert(window.id(), (window, state));
+        windows.insert(window.id, window);
     }
 
-    for (window, state) in buffered_window_creates.drain(..) {
-        windows.insert(window.id(), (window, state));
+    for window in buffered_window_creates.drain(..) {
+        windows.insert(window.id, window);
     }
 
     for window_id in buffered_window_destroys.drain(..) {
@@ -397,7 +416,7 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
         match event {
             Event::NewEvents(_) => {}
             Event::WindowEvent { window_id, event } => {
-                let Some((_window, window_state)) = windows.get_mut(&window_id) else {
+                let Some(window_state) = windows.get_mut(&window_id) else {
                     // The window in question has been 'destroyed'.
                     if windows.is_empty() {
                         *control_flow = winit::event_loop::ControlFlow::Exit;
@@ -413,7 +432,7 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
                     }
                     WindowEvent::CloseRequested => {
                         if window_state.handler.on_close_request(&mut control) {
-                            let (_window, mut state) = windows.remove(&window_id).unwrap();
+                            let mut state = windows.remove(&window_id).unwrap();
                             state.handler.on_destroy();
                         }
                     }
@@ -503,7 +522,7 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
             Event::Resumed => {}
             Event::MainEventsCleared => {}
             Event::RedrawRequested(window_id) => {
-                let (_window, window_state) = windows.get_mut(&window_id).unwrap();
+                let window_state = windows.get_mut(&window_id).unwrap();
                 window_state.handler.on_redraw(&mut control);
             }
             Event::RedrawEventsCleared => {}
@@ -512,14 +531,14 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
 
         // Add any windows that were created during this iteration of the event
         // loop to the map.
-        for (window, state) in buffered_window_creates.drain(..) {
-            windows.insert(window.id(), (window, state));
+        for window in buffered_window_creates.drain(..) {
+            windows.insert(window.id, window);
         }
 
         // Remove any windows that were destroyed during this iteration of the
         // event loop to the map.
         for window_id in buffered_window_destroys.drain(..) {
-            let (_window, mut state) = windows.remove(&window_id.0).unwrap();
+            let mut state = windows.remove(&window_id.0).unwrap();
             state.handler.on_destroy();
             // _window gets dropped, producing the `WindowEvent::Destroyed` event.
         }
