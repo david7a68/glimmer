@@ -9,6 +9,7 @@ structures = { path = "../structures" }
 
 raw-window-handle = "0.5.0"
 smallvec = { version = "1.10", features = ["union", "const_generics"] }
+png = "0.17.7"
 
 [dependencies.windows]
 version = "0.44"
