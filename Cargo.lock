@@ -1099,6 +1099,7 @@ dependencies = [
 name = "shell"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "geometry",
  "raw-window-handle 0.5.0",
  "winit",

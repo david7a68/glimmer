@@ -13,6 +13,7 @@ impl<T> Point<T>
 where
     T: Num + Copy,
 {
+    #[must_use]
     pub fn zero() -> Self {
         Self {
             x: T::zero(),
@@ -20,6 +21,7 @@ where
         }
     }
 
+    #[must_use]
     pub fn new(x: T, y: T) -> Self {
         Self { x, y }
     }
@@ -47,6 +49,7 @@ impl<T> Offset<T>
 where
     T: Num + Copy,
 {
+    #[must_use]
     pub fn zero() -> Self {
         Self {
             dx: T::zero(),
@@ -77,6 +80,7 @@ impl<T> Extent<T>
 where
     T: Num + Copy,
 {
+    #[must_use]
     pub fn zero() -> Self {
         Self {
             width: T::zero(),
@@ -84,6 +88,7 @@ where
         }
     }
 
+    #[must_use]
     pub fn new(width: T, height: T) -> Self {
         Self { width, height }
     }
@@ -113,11 +118,17 @@ where
     P: Num + Copy,
     E: Num + Copy,
 {
+    #[must_use]
     pub fn zero() -> Self {
         Self {
             origin: Point::zero(),
             size: Extent::zero(),
         }
+    }
+
+    #[must_use]
+    pub fn new(origin: Point<P>, size: Extent<E>) -> Self {
+        Self { origin, size }
     }
 }
 

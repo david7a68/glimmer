@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use geometry::{Extent, Offset, Point};
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -8,7 +8,7 @@ use winit::{
     event_loop::EventLoop,
 };
 
-/// Enumerates mouse buttons.
+/// Mouse buttons (e.g. left, right, middle, etc.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
@@ -17,7 +17,7 @@ pub enum MouseButton {
     Other(u16),
 }
 
-/// Enumerates button states.
+/// The state of a button or key (e.g. pressed, released, repeated)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ButtonState {
     Pressed,
@@ -28,7 +28,7 @@ pub enum ButtonState {
     Repeated(u16),
 }
 
-/// Symbolic name for a key on the keyboard.
+/// The symbolic (read: English) name for a key on the keyboard.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VirtualKeyCode {
@@ -199,22 +199,19 @@ pub struct WindowId(winit::window::WindowId);
 
 /// Trait for handling window events.
 pub trait WindowHandler {
-    /// Called when the window is first created.
-    fn on_create(&mut self, control: &mut dyn WindowControl, window: Window);
-
     /// Called when the window is destroyed. This is the last event that will be
     /// received by the window handler before it is dropped.
     fn on_destroy(&mut self);
 
     /// Called when the user has requested that the window be closed, either by
     /// clicking the X, by pressing Alt-F4, etc.
-    fn on_close_request(&mut self, control: &mut dyn WindowControl) -> bool;
+    fn on_close_request(&mut self, spawner: &mut dyn WindowSpawner<Self>) -> bool;
 
     /// Called when a mouse button is pressed or released within the bounds of
     /// the window.
     fn on_mouse_button(
         &mut self,
-        control: &mut dyn WindowControl,
+        spawner: &mut dyn WindowSpawner<Self>,
         button: MouseButton,
         state: ButtonState,
         at: Point<i32>,
@@ -223,64 +220,84 @@ pub trait WindowHandler {
     /// Called when the cursor moves within the bounds of the window.
     ///
     /// Captive cursor mode is not currently supported.
-    fn on_cursor_move(&mut self, control: &mut dyn WindowControl, at: Point<i32>);
+    fn on_cursor_move(&mut self, spawner: &mut dyn WindowSpawner<Self>, at: Point<i32>);
 
     /// Called when a key is pressed or released.
-    fn on_key(&mut self, control: &mut dyn WindowControl, key: VirtualKeyCode, state: ButtonState);
+    fn on_key(
+        &mut self,
+        spawner: &mut dyn WindowSpawner<Self>,
+        key: VirtualKeyCode,
+        state: ButtonState,
+    );
 
     /// Called when the window is resized.
-    fn on_resize(&mut self, control: &mut dyn WindowControl, inner_size: Extent<u32>);
+    fn on_resize(&mut self, spawner: &mut dyn WindowSpawner<Self>, inner_size: Extent<u32>);
 
     /// Called when window DPI scaling changes. This may change if the user
     /// changes OS DPI or resolution settings, or if the window moves between
     /// two monitors with different DPI.
     fn on_rescale(
         &mut self,
-        control: &mut dyn WindowControl,
+        spawner: &mut dyn WindowSpawner<Self>,
         scale_factor: f64,
         new_inner_size: Extent<u32>,
     );
 
     /// Called when the OS requests that the window be redrawn.
-    fn on_redraw(&mut self, control: &mut dyn WindowControl);
+    fn on_redraw(&mut self, spawner: &mut dyn WindowSpawner<Self>);
 }
 
-/// Trait for feeding back window control to the shell.
-pub trait WindowControl {
-    fn spawn(&mut self, desc: WindowDesc);
-
-    fn destroy(&mut self, window: WindowId);
+/// Event loop interface for spawing new windows.
+///
+/// Only accessible from within a window handler (and event loop).
+pub trait WindowSpawner<Handler: WindowHandler> {
+    /// Creates a new window bound to the event loop.
+    fn spawn(&mut self, desc: WindowDesc<Handler>);
 }
 
-/// A description of a window. Pass this in to the `spawn` method of a
-/// `WindowControl` or to the `run` function on event loop start.
-pub struct WindowDesc<'a> {
+bitflags::bitflags! {
+    pub struct WindowFlags: u32 {
+        const RESIZABLE = 0x1;
+        const VISIBLE = 0x2;
+        const TRANSPARENT = 0x4;
+        const ALWAYS_ON_TOP = 0x8;
+    }
+}
+
+impl Default for WindowFlags {
+    fn default() -> Self {
+        WindowFlags::RESIZABLE | WindowFlags::VISIBLE
+    }
+}
+
+/// A description of a window to be created.
+///
+/// Pass this in to the `spawn` method of a `WindowControl` or to the `run`
+/// function on event loop start.
+pub struct WindowDesc<'a, Handler: WindowHandler> {
     pub title: &'a str,
     pub size: Extent<u32>,
     pub min_size: Option<Extent<u32>>,
     pub max_size: Option<Extent<u32>>,
     pub position: Option<Offset<i32>>,
-    pub resizable: bool,
-    pub visible: bool,
-    pub transparent: bool,
-    pub always_on_top: bool,
-    pub handler: Box<dyn WindowHandler>,
+    pub flags: WindowFlags,
+    /// Constructor for the window handler.
+    pub handler: &'a mut dyn FnMut(Window) -> Handler,
 }
 
-impl<'a> WindowDesc<'a> {
+impl<'a, Handler: WindowHandler> WindowDesc<'a, Handler> {
     fn build(
-        mut self,
+        self,
         target: &winit::event_loop::EventLoopWindowTarget<()>,
-        buffered_creates: &'a mut Vec<WindowState>,
-        buffered_destroys: &'a mut Vec<WindowId>,
-    ) -> WindowState {
+        deferred_destroy: DeferredDestroy,
+    ) -> WindowState<Handler> {
         let mut builder = winit::window::WindowBuilder::new()
             .with_title(self.title)
             .with_inner_size(as_logical_size(self.size))
-            .with_resizable(self.resizable)
-            .with_visible(self.visible)
-            .with_transparent(self.transparent)
-            .with_always_on_top(self.always_on_top);
+            .with_resizable(self.flags.contains(WindowFlags::RESIZABLE))
+            .with_visible(self.flags.contains(WindowFlags::VISIBLE))
+            .with_transparent(self.flags.contains(WindowFlags::TRANSPARENT))
+            .with_always_on_top(self.flags.contains(WindowFlags::ALWAYS_ON_TOP));
 
         if let Some(position) = self.position {
             builder = builder.with_position(as_logical_position(position));
@@ -297,23 +314,25 @@ impl<'a> WindowDesc<'a> {
         let window = builder.build(target).unwrap();
         let id = window.id();
 
-        // Inform the handler that the window has been created.
-        self.handler.on_create(
-            &mut Control::new(target, buffered_creates, buffered_destroys),
-            Window { inner: window },
-        );
+        let handler = (self.handler)(Window {
+            inner: window,
+            deferred_destroy,
+        });
 
         WindowState {
             id,
-            handler: self.handler,
+            handler,
             cursor_position: Point::zero(),
             repeated_key: None,
         }
     }
 }
 
+/// An operating system window.
+#[must_use]
 pub struct Window {
     inner: winit::window::Window,
+    deferred_destroy: DeferredDestroy,
 }
 
 unsafe impl HasRawWindowHandle for Window {
@@ -323,6 +342,7 @@ unsafe impl HasRawWindowHandle for Window {
 }
 
 impl Window {
+    #[must_use]
     pub fn id(&self) -> WindowId {
         WindowId(self.inner.id())
     }
@@ -330,26 +350,32 @@ impl Window {
     pub fn set_title(&mut self, title: &str) {
         self.inner.set_title(title);
     }
+
+    pub fn destroy(&self) {
+        self.deferred_destroy.borrow_mut().push(self.inner.id());
+    }
 }
 
-struct WindowState {
+#[must_use]
+struct WindowState<Handler: WindowHandler> {
     id: winit::window::WindowId,
-    handler: Box<dyn WindowHandler>,
+    handler: Handler,
     cursor_position: Point<i32>,
     repeated_key: Option<(winit::event::KeyboardInput, u16)>,
 }
 
-struct Control<'a> {
+#[must_use]
+struct Control<'a, Handler: WindowHandler> {
     event_loop: &'a winit::event_loop::EventLoopWindowTarget<()>,
-    buffered_creates: &'a mut Vec<WindowState>,
-    buffered_destroys: &'a mut Vec<WindowId>,
+    buffered_creates: &'a mut Vec<WindowState<Handler>>,
+    buffered_destroys: &'a DeferredDestroy,
 }
 
-impl<'a> Control<'a> {
+impl<'a, Handler: WindowHandler> Control<'a, Handler> {
     fn new(
         event_loop: &'a winit::event_loop::EventLoopWindowTarget<()>,
-        buffered_creates: &'a mut Vec<WindowState>,
-        buffered_destroys: &'a mut Vec<WindowId>,
+        buffered_creates: &'a mut Vec<WindowState<Handler>>,
+        buffered_destroys: &'a DeferredDestroy,
     ) -> Self {
         Self {
             event_loop,
@@ -359,24 +385,26 @@ impl<'a> Control<'a> {
     }
 }
 
-impl<'a> WindowControl for Control<'a> {
-    fn spawn(&mut self, desc: WindowDesc) {
-        let window = desc.build(
-            self.event_loop,
-            self.buffered_creates,
-            self.buffered_destroys,
-        );
+impl<'a, Handler: WindowHandler> WindowSpawner<Handler> for Control<'a, Handler> {
+    fn spawn(&mut self, desc: WindowDesc<Handler>) {
+        let window = desc.build(self.event_loop, self.buffered_destroys.clone());
         self.buffered_creates.push(window);
-    }
-
-    fn destroy(&mut self, window: WindowId) {
-        self.buffered_destroys.push(window);
     }
 }
 
+/// Holds the ids of windows that are scheduled to be destroyed. They are kept
+/// on the heap to allow `Window` to own a reference to it. This is necessary
+/// for `Window::destroy` to schedule the window for destruction.
+type DeferredDestroy = Rc<RefCell<Vec<winit::window::WindowId>>>;
+
 /// Creates the described windows and runs the OS event loop until all windows
 /// are destroyed.
-pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
+#[allow(clippy::too_many_lines)]
+pub fn run<'a, Handler, I>(window_descs: I)
+where
+    Handler: WindowHandler + 'static,
+    I: IntoIterator<Item = WindowDesc<'a, Handler>>,
+{
     let event_loop = EventLoop::new();
     let mut windows = HashMap::with_capacity(2);
 
@@ -384,15 +412,11 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
     // otherwise concurrently borrow from `windows` whilst potentially creating
     // new windows within a window's event handler. These buffered windows are
     // added to the map at the end of every event loop invocation.
-    let mut buffered_window_creates = Vec::new();
-    let mut buffered_window_destroys = Vec::new();
+    let mut buffered_window_creates: Vec<WindowState<Handler>> = Vec::new();
+    let buffered_window_destroys: DeferredDestroy = Rc::new(RefCell::new(Vec::new()));
 
     for desc in window_descs {
-        let window = desc.build(
-            &event_loop,
-            &mut buffered_window_creates,
-            &mut buffered_window_destroys,
-        );
+        let window = desc.build(&event_loop, buffered_window_destroys.clone());
         windows.insert(window.id, window);
     }
 
@@ -400,8 +424,11 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
         windows.insert(window.id, window);
     }
 
-    for window_id in buffered_window_destroys.drain(..) {
-        windows.remove(&window_id.0);
+    for window_id in buffered_window_destroys.borrow_mut().drain(..) {
+        let mut state = windows
+            .remove(&window_id)
+            .expect("cannot destory a window twice");
+        state.handler.on_destroy();
     }
 
     event_loop.run(move |event, event_loop, control_flow| {
@@ -410,11 +437,10 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
         let mut control = Control::new(
             event_loop,
             &mut buffered_window_creates,
-            &mut buffered_window_destroys,
+            &buffered_window_destroys,
         );
 
         match event {
-            Event::NewEvents(_) => {}
             Event::WindowEvent { window_id, event } => {
                 let Some(window_state) = windows.get_mut(&window_id) else {
                     // The window in question has been 'destroyed'.
@@ -432,8 +458,7 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
                     }
                     WindowEvent::CloseRequested => {
                         if window_state.handler.on_close_request(&mut control) {
-                            let mut state = windows.remove(&window_id).unwrap();
-                            state.handler.on_destroy();
+                            buffered_window_destroys.borrow_mut().push(window_id);
                         }
                     }
                     WindowEvent::CursorMoved {
@@ -516,17 +541,13 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
                     _ => {}
                 }
             }
-            Event::DeviceEvent { .. } => {}
-            Event::UserEvent(_) => {}
-            Event::Suspended => {}
-            Event::Resumed => {}
-            Event::MainEventsCleared => {}
             Event::RedrawRequested(window_id) => {
-                let window_state = windows.get_mut(&window_id).unwrap();
+                let window_state = windows
+                    .get_mut(&window_id)
+                    .expect("the window must exist for the OS to request that it be redrawn");
                 window_state.handler.on_redraw(&mut control);
             }
-            Event::RedrawEventsCleared => {}
-            Event::LoopDestroyed => {}
+            _ => {}
         }
 
         // Add any windows that were created during this iteration of the event
@@ -537,10 +558,11 @@ pub fn run<'a>(window_descs: impl IntoIterator<Item = WindowDesc<'a>>) {
 
         // Remove any windows that were destroyed during this iteration of the
         // event loop to the map.
-        for window_id in buffered_window_destroys.drain(..) {
-            let mut state = windows.remove(&window_id.0).unwrap();
+        for window_id in buffered_window_destroys.borrow_mut().drain(..) {
+            let mut state = windows
+                .remove(&window_id)
+                .expect("cannot destroy a window twice");
             state.handler.on_destroy();
-            // _window gets dropped, producing the `WindowEvent::Destroyed` event.
         }
     });
 }
