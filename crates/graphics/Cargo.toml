@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 geometry = { path = "../geometry" }
+structures = { path = "../structures" }
+
 raw-window-handle = "0.5.0"
 smallvec = { version = "1.10", features = ["union", "const_generics"] }
 

@@ -142,7 +142,7 @@ impl RenderGraph {
     pub fn draw_rect(
         &mut self,
         parent: RenderGraphNodeId,
-        rect: Rect<f32>,
+        rect: &Rect<f32>,
         colors: [Color; 4],
         corner_radii: Option<[f32; 4]>,
     ) {

@@ -85,12 +85,12 @@ impl Surface {
         let waitable_object = unsafe { swapchain.GetFrameLatencyWaitableObject() };
 
         let mut rtv_heap = DescriptorHeap::new(
-            &dx,
+            dx,
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
             Self::BUFFER_COUNT,
             false,
         );
-        let [a, b] = Self::get_render_targets(&dx, &swapchain, &mut rtv_heap);
+        let [a, b] = Self::get_render_targets(dx, &swapchain, &mut rtv_heap);
 
         Self {
             flags,
@@ -108,7 +108,7 @@ impl Surface {
     }
 
     pub fn resize(&mut self, dx: &dx::Interfaces) {
-        for rt in self.render_targets.iter_mut() {
+        for rt in &mut self.render_targets {
             self.rtv_heap.free(rt.take().unwrap().rtv);
         }
 
@@ -130,7 +130,7 @@ impl Surface {
     /// Retrieves the next image in the swap chain.
     ///
     /// This function will block until the next image is available.
-    pub fn get_next_image(&mut self) -> SurfaceImage {
+    pub fn get_next_image(&mut self) -> &Image {
         // block until the next image is available
         //
         // NOTE: should this instead be done just before presenting???
@@ -140,7 +140,18 @@ impl Surface {
 
         self.image_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() };
 
-        SurfaceImage { surface: self }
+        self.render_targets[self.image_index as usize]
+            .as_ref()
+            .unwrap()
+    }
+
+    /// Presents the image to the surface.
+    pub fn present(&self) {
+        // must check if the window is in windowed mode
+
+        // We assume that the window is not typically in borderless fullscreen,
+        // and so use a presentation interval of 1 (VSync).
+        unsafe { self.swapchain.Present(1, 0) }.unwrap();
     }
 
     fn get_render_targets(
@@ -186,27 +197,5 @@ impl Drop for Surface {
             HANDLE(0),
             "must call destroy before dropping Surface"
         );
-    }
-}
-
-#[allow(clippy::module_name_repetitions)]
-pub struct SurfaceImage<'a> {
-    surface: &'a Surface,
-}
-
-impl SurfaceImage<'_> {
-    /// Presents the image to the surface.
-    pub fn present(self) {
-        // must check if the window is in windowed mode
-
-        // We assume that the window is not typically in borderless fullscreen,
-        // and so use a presentation interval of 1 (VSync).
-        unsafe { self.surface.swapchain.Present(1, 0) }.unwrap();
-    }
-
-    pub fn get_image(&self) -> &Image {
-        self.surface.render_targets[self.surface.image_index as usize]
-            .as_ref()
-            .unwrap()
     }
 }

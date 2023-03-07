@@ -20,7 +20,11 @@ impl<'a> FrameAllocator<'a> {
     /// Allocates a block of memory from the heap.
     ///
     /// If the request returns `Error::OutOfMemory`,
-    pub fn allocate(&mut self, size: u64, alignment: u64) -> Result<Allocation, Error> {
+    pub fn allocate(
+        &mut self,
+        size: u64,
+        alignment: u64,
+    ) -> Result<(Allocation, Option<&mut [u8]>), Error> {
         enum Adjust {
             Align,
             Wrap,
@@ -72,38 +76,42 @@ impl<'a> FrameAllocator<'a> {
             requested: size,
         })?;
 
-        let (adjust_amount, heap_ptr) = match adjust_amount {
+        let (adjust_amount, heap_offset) = match adjust_amount {
             Adjust::Align => (aligned_ptr - base_ptr, aligned_ptr),
             Adjust::Wrap => (self.allocator.capacity - base_ptr, 0),
         };
 
-        let r = Ok(Allocation {
+        let r = Allocation {
             size,
             virtual_offset: self.bytes_allocated + adjust_amount,
-            heap_offset: heap_ptr,
-        });
+            heap_offset,
+        };
+
+        let p = if let Some(heap_ptr) = self.allocator.base_ptr {
+            Some(unsafe {
+                std::slice::from_raw_parts_mut(
+                    heap_ptr.as_ptr().add(heap_offset as usize),
+                    size as usize,
+                )
+            })
+        } else {
+            None
+        };
 
         self.bytes_allocated += adjust_amount + size;
 
-        r
+        Ok((r, p))
     }
 
     pub fn upload<T: Copy>(&mut self, values: &[T]) -> Result<Allocation, Error> {
         let size = std::mem::size_of_val(values) as u64;
         let alignment = std::mem::align_of::<T>() as u64;
-        let allocation = self.allocate(size, alignment)?;
+        let (allocation, bytes) = self.allocate(size, alignment)?;
 
-        let heap_ptr = self.allocator.base_ptr.ok_or(Error::NoHeap)?;
+        let bytes = bytes.ok_or(Error::NoHeap)?;
 
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                values.as_ptr(),
-                heap_ptr
-                    .as_ptr()
-                    .add(allocation.heap_offset as usize)
-                    .cast(),
-                values.len(),
-            )
+            std::ptr::copy_nonoverlapping(values.as_ptr(), bytes.as_mut_ptr().cast(), values.len());
         }
 
         Ok(allocation)
@@ -233,12 +241,12 @@ mod tests {
             let mut frame = allocator.begin_frame();
             assert_eq!(
                 // case 3
-                frame.allocate(20, 4),
-                Ok(Allocation {
+                frame.allocate(20, 4).unwrap().0,
+                Allocation {
                     size: 20,
                     virtual_offset: 0,
                     heap_offset: 0,
-                })
+                }
             );
             frame.finish()
         };
@@ -250,12 +258,12 @@ mod tests {
             let mut frame = allocator.begin_frame();
             assert_eq!(
                 // case 1
-                frame.allocate(70, 4),
-                Ok(Allocation {
+                frame.allocate(70, 4).unwrap().0,
+                Allocation {
                     size: 70,
                     virtual_offset: 20,
                     heap_offset: 20,
-                })
+                }
             );
             frame.finish()
         };
@@ -268,12 +276,12 @@ mod tests {
             let mut frame = allocator.begin_frame();
             assert_eq!(
                 // cas 2
-                frame.allocate(20, 8),
-                Ok(Allocation {
+                frame.allocate(20, 8).unwrap().0,
+                Allocation {
                     size: 20,
                     virtual_offset: 100,
                     heap_offset: 0,
-                })
+                }
             );
             frame.finish()
         };
@@ -292,7 +300,7 @@ mod tests {
             let mut frame = allocator.begin_frame();
             assert_eq!(
                 // case 5
-                frame.allocate(15, 64).unwrap(),
+                frame.allocate(15, 64).unwrap().0,
                 Allocation {
                     size: 15,
                     virtual_offset: 164,
@@ -317,12 +325,12 @@ mod tests {
             let mut frame = allocator.begin_frame();
             assert_eq!(
                 // case 4
-                frame.allocate(80, 16),
-                Ok(Allocation {
+                frame.allocate(80, 16).unwrap().0,
+                Allocation {
                     size: 80,
                     virtual_offset: 200,
                     heap_offset: 0,
-                })
+                }
             );
             frame.finish()
         };

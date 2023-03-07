@@ -26,7 +26,7 @@ SamplerState sampler0 : register(s0);
 struct VsInput
 {
     float2 position : POSITION;
-    float2 uv: TEXCOORD;
+    float2 uv : TEXCOORD;
     float4 color : COLOR;
 };
 
@@ -37,8 +37,7 @@ struct PsInput
     float2 uv : TEXCOORD;
 };
 
-[RootSignature(RS)]
-PsInput vertex_main(VsInput input)
+[RootSignature(RS)] PsInput vertex_main(VsInput input)
 {
     PsInput output;
 
@@ -57,8 +56,9 @@ float4 pixel_main(PsInput input) : SV_TARGET
 
     float4 final_color = input.color * sampled_color;
 
-    // return input.color;
     return final_color;
     // return texture0.Sample(sampler0, input.uv);
+
+    // return input.color * float4(1.0, 1.0, 1.0, 1.0);
     // return float4(input.uv.x, input.uv.y, 0.0f, 1.0f);
 }

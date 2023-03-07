@@ -607,9 +607,9 @@ pub mod num {
     {
     }
 
-    pub trait SNum: Num + Neg<Output = Self> {}
+    pub trait Signed: Num + Neg<Output = Self> {}
 
-    pub trait Real: SNum + Into<f32> {
+    pub trait Real: Signed + Into<f32> {
         #[must_use]
         fn sin(self) -> Self;
 
@@ -640,7 +640,7 @@ pub mod num {
 
     impl Num for i32 {}
 
-    impl SNum for i32 {}
+    impl Signed for i32 {}
 
     impl Zero for u32 {
         fn zero() -> Self {
@@ -670,7 +670,7 @@ pub mod num {
 
     impl Num for f32 {}
 
-    impl SNum for f32 {}
+    impl Signed for f32 {}
 
     impl Real for f32 {
         fn sin(self) -> Self {

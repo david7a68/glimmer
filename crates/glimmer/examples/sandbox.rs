@@ -143,7 +143,7 @@ impl WindowHandler for AppWindow {
             &[
                 Vertex {
                     position: Point::new(0.0, 0.0),
-                    uv: Point::zero(),
+                    uv: Point::new(0.5, 0.5),
                     color: Color::RED,
                 },
                 Vertex {
@@ -151,12 +151,12 @@ impl WindowHandler for AppWindow {
                         self.window.extent().width as f32,
                         self.window.extent().height as f32,
                     ),
-                    uv: Point::new(1.0, 1.0),
+                    uv: Point::new(0.75, 0.75),
                     color: Color::GREEN,
                 },
                 Vertex {
                     position: Point::new(0.0, self.window.extent().height as f32),
-                    uv: Point::new(0.0, 1.0),
+                    uv: Point::new(0.0, 0.5),
                     color: Color::BLUE,
                 },
             ],
@@ -165,14 +165,14 @@ impl WindowHandler for AppWindow {
 
         render_graph.draw_rect(
             RenderGraphNodeId::root(),
-            Rect::new(Point::new(800.0, 100.0), Point::new(1000.0, 300.0)),
+            &Rect::new(Point::new(800.0, 100.0), Point::new(1000.0, 300.0)),
             [Color::RED, Color::GREEN, Color::BLUE, Color::BLACK],
             Some([20.0, 0.0, 300.0, 300.0]),
         );
 
-        self.graphics.draw(image.image(), &render_graph);
+        self.graphics.draw(&image, &render_graph);
 
-        image.present();
+        self.graphics.present(&mut self.surface);
     }
 }
 

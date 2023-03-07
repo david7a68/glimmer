@@ -50,12 +50,17 @@ impl<T> Graphics<T> {
         }
         .unwrap();
 
+        let fence: ID3D12Fence =
+            unsafe { dx.device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }.unwrap();
+
         #[cfg(debug_assertions)]
         if dx.is_debug {
-            unsafe { queue.SetName(w!("Graphics Queue")) }.unwrap();
+            unsafe {
+                queue.SetName(w!("Graphics Queue")).unwrap();
+                fence.SetName(w!("Graphics Fence")).unwrap();
+            };
         }
 
-        let fence = unsafe { dx.device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }.unwrap();
         let event = unsafe { CreateEventW(None, false, false, None) }.unwrap();
 
         assert_ne!(
@@ -139,24 +144,33 @@ impl<T> Graphics<T> {
                 )
             }
             _ => {
-                let allocator = unsafe {
+                let allocator: ID3D12CommandAllocator = unsafe {
                     dx.device
                         .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
                         .unwrap()
                 };
 
+                if dx.is_debug {
+                    unsafe { allocator.SetName(w!("Graphics Command Allocator")).unwrap() };
+                }
+
                 (allocator, SmallVec::new(), None)
             }
         };
+
+        // Note: naming command lists doesn't seem to do anything...?
 
         let commands = if let Some(commands) = self.commands.pop() {
             unsafe { commands.Reset(&allocator, None) }.unwrap();
             commands
         } else {
             unsafe {
-                dx.device
+                let command_list: ID3D12GraphicsCommandList = dx
+                    .device
                     .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
-                    .unwrap()
+                    .unwrap();
+
+                command_list
             }
         };
 

@@ -39,6 +39,7 @@
 use std::cell::RefCell;
 
 use geometry::{Extent, Point};
+use pixel_buffer::PixelBufferRef;
 use raw_window_handle::HasRawWindowHandle;
 
 mod memory;
@@ -51,7 +52,9 @@ mod dx12;
 #[cfg(target_os = "windows")]
 use dx12 as platform;
 
+pub use pixel_buffer::PixelBuffer;
 pub use render_graph::{RenderGraph, RenderGraphNodeId};
+use structures::generational_pool::{GenerationalPool, Handle};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Color {
@@ -87,6 +90,13 @@ impl Color {
         r: 0.0,
         g: 0.0,
         b: 0.0,
+        a: 1.0,
+    };
+
+    pub const WHITE: Self = Self {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
         a: 1.0,
     };
 
@@ -135,6 +145,7 @@ pub struct GraphicsConfig {
 }
 
 pub struct GraphicsContext {
+    image_handles: RefCell<GenerationalPool<platform::Image>>,
     inner: RefCell<platform::GraphicsContext>,
 }
 
@@ -142,6 +153,7 @@ impl GraphicsContext {
     #[must_use]
     pub fn new(config: &GraphicsConfig) -> Self {
         Self {
+            image_handles: GenerationalPool::new().into(),
             inner: RefCell::new(platform::GraphicsContext::new(config)),
         }
     }
@@ -160,22 +172,32 @@ impl GraphicsContext {
         self.inner.borrow().destroy_surface(&mut surface.inner);
     }
 
-    pub fn get_next_image<'a>(&self, surface: &'a mut Surface) -> SurfaceImage<'a> {
-        SurfaceImage {
-            inner: self.inner.borrow().get_next_image(&mut surface.inner),
-        }
+    pub fn get_next_image<'a>(&self, surface: &'a mut Surface) -> RenderTarget<'a> {
+        let inner = self.inner.borrow().get_next_image(&mut surface.inner);
+        RenderTarget { inner }
+    }
+
+    pub fn present(&self, surface: &mut Surface) {
+        self.inner.borrow().present(&mut surface.inner);
     }
 
     pub fn resize(&self, surface: &mut Surface) {
-        self.inner.borrow().resize(&mut surface.inner)
+        self.inner.borrow().resize(&mut surface.inner);
     }
 
-    pub fn draw(&self, target: &Image, content: &RenderGraph) {
+    pub fn draw(&self, target: &RenderTarget, content: &RenderGraph) {
         self.inner.borrow_mut().draw(&target.inner, content);
     }
 
-    pub fn upload_image(&self, pixels: &PixelBuffer) -> Image {
-        todo!()
+    pub fn upload_image(&self, pixels: PixelBufferRef) -> Image {
+        let image = self.inner.borrow_mut().upload_image(pixels);
+        let handle = self.image_handles.borrow_mut().insert(image);
+        Image { handle }
+    }
+
+    pub fn destroy_image(&self, image: &mut Image) {
+        let image = self.image_handles.borrow_mut().remove(image.handle);
+        std::mem::drop(image);
     }
 }
 
@@ -183,24 +205,11 @@ pub struct Surface {
     inner: platform::Surface,
 }
 
-pub struct SurfaceImage<'a> {
-    inner: platform::SurfaceImage<'a>,
-}
-
-impl<'a> SurfaceImage<'a> {
-    /// Presents the swapchain image to the surface.
-    pub fn present(self) {
-        self.inner.present();
-    }
-
-    #[must_use]
-    pub fn image(&self) -> &Image {
-        // This is safe as long as Image remains repr(transparent).
-        unsafe { &*((self.inner.get_image() as *const dx12::Image).cast()) }
-    }
+pub struct RenderTarget<'a> {
+    inner: platform::RenderTarget<'a>,
 }
 
 #[repr(transparent)]
 pub struct Image {
-    inner: platform::Image,
+    handle: Handle<platform::Image>,
 }

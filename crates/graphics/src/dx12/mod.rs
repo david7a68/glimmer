@@ -5,7 +5,7 @@ use std::{cell::Cell, ptr::NonNull};
 use geometry::{Extent, ScreenSpace};
 use raw_window_handle::RawWindowHandle;
 
-use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
+use windows::{core::Interface, w, Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY};
 #[allow(clippy::wildcard_imports)]
 use windows::{
     core::PCSTR,
@@ -22,15 +22,16 @@ use crate::{
         temp_allocator::{self, FrameMarker},
         HeapOffset,
     },
+    pixel_buffer::{ColorSpace, PixelBufferRef, PixelFormat},
     render_graph::{RenderGraph, RenderGraphCommand},
-    GraphicsConfig, RenderGraphNodeId, RoundedRectVertex, Vertex,
+    Color, GraphicsConfig, PixelBuffer, RenderGraphNodeId, RoundedRectVertex, Vertex,
 };
 
 mod dx;
 mod queue;
 mod surface;
 
-pub use surface::{Surface, SurfaceImage};
+pub use surface::Surface;
 
 use self::queue::SubmissionId;
 
@@ -87,22 +88,62 @@ impl GraphicsContext {
         );
 
         let white_pixel = {
+            let pixels = PixelBuffer::from_colors(
+                // Waiting until we can do `[Color::WHITE.as_rgba8();
+                // 4].flatten()`, then we can use `PixelBufferRef::from_bytes`
+                [Color::WHITE; 4].as_ref(),
+                2,
+                PixelFormat::Rgba8,
+                ColorSpace::Srgb,
+            );
+
             let (rec, _) = graphics_queue.record(&dx);
             let mut mem = upload_allocator.begin_frame();
-            let pixel = create_white_pixel(
+            let texture = upload_image(
                 &dx,
                 &rec.commands,
                 &upload_buffer,
                 &mut mem,
                 &mut descriptor_heap,
+                pixels.as_ref(),
             );
-            graphics_queue.submit(rec, mem.finish());
-            pixel
+
+            let submit = graphics_queue.submit(rec, mem.finish());
+            texture.last_use.set(submit);
+
+            texture
         };
+
+        if dx.is_debug {
+            unsafe {
+                upload_buffer.SetName(w!("Upload Buffer")).unwrap();
+                descriptor_heap
+                    .heap
+                    .SetName(w!("Texture Descriptor Heap"))
+                    .unwrap();
+                polygon_shader
+                    .pipeline_state
+                    .SetName(w!("Polygon Shader"))
+                    .unwrap();
+                polygon_shader
+                    .root_signature
+                    .SetName(w!("Polygon Root Signature"))
+                    .unwrap();
+                round_rect_shader
+                    .pipeline_state
+                    .SetName(w!("Round Rect Shader"))
+                    .unwrap();
+                round_rect_shader
+                    .root_signature
+                    .SetName(w!("Round Rect Root Signature"))
+                    .unwrap();
+                white_pixel.resource.SetName(w!("White Pixel")).unwrap();
+            }
+        }
 
         Self {
             dx,
-            graphics_queue: graphics_queue,
+            graphics_queue,
             white_pixel,
             polygon_shader,
             round_rect_shader,
@@ -126,8 +167,13 @@ impl GraphicsContext {
         surface.destroy();
     }
 
-    pub fn get_next_image<'a>(&self, surface: &'a mut Surface) -> SurfaceImage<'a> {
-        surface.get_next_image()
+    pub fn get_next_image<'a>(&self, surface: &'a mut Surface) -> RenderTarget<'a> {
+        let image = surface.get_next_image();
+        RenderTarget { image }
+    }
+
+    pub fn present(&self, surface: &mut Surface) {
+        surface.present();
     }
 
     pub fn resize(&self, surface: &mut Surface) {
@@ -135,7 +181,9 @@ impl GraphicsContext {
         surface.resize(&self.dx);
     }
 
-    pub fn draw(&mut self, target: &Image, content: &RenderGraph) {
+    pub fn draw(&mut self, target: &RenderTarget, content: &RenderGraph) {
+        let target = target.image;
+
         let (rec, old_marker) = self.graphics_queue.record(&self.dx);
 
         if let Some(old_marker) = old_marker {
@@ -171,6 +219,12 @@ impl GraphicsContext {
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             )]);
+
+            if let Ok(dbg) = rec.commands.cast::<ID3D12DebugCommandList>() {
+                assert!(dbg
+                    .AssertResourceState(&target.resource, 0, D3D12_RESOURCE_STATE_RENDER_TARGET.0)
+                    .as_bool());
+            }
 
             rec.commands
                 .OMSetRenderTargets(1, Some(&target.rtv.cpu), false, None);
@@ -230,6 +284,32 @@ impl GraphicsContext {
         let fence_value = self.graphics_queue.submit(rec, frame_marker);
 
         target.last_use.set(fence_value);
+    }
+
+    pub fn upload_image(&mut self, pixels: PixelBufferRef) -> Image {
+        let (rec, old_marker) = self.graphics_queue.record(&self.dx);
+
+        // Make sure to free old memory before we try to allocate more.
+        if let Some(old_marker) = old_marker {
+            self.upload_allocator.free_frame(old_marker);
+        }
+
+        let mut alloc = self.upload_allocator.begin_frame();
+
+        let image = upload_image(
+            &self.dx,
+            &rec.commands,
+            &self.upload_buffer,
+            &mut alloc,
+            &mut self.descriptor_heap,
+            pixels,
+        );
+
+        let submission_id = self.graphics_queue.submit(rec, alloc.finish());
+
+        image.last_use.set(submission_id);
+
+        image
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -299,6 +379,10 @@ impl Drop for GraphicsContext {
     fn drop(&mut self) {
         self.graphics_queue.flush();
     }
+}
+
+pub struct RenderTarget<'a> {
+    image: &'a Image,
 }
 
 pub struct Image {
@@ -496,15 +580,15 @@ impl<Constants: PushConstants> Shader<Constants> {
         &self,
         command_list: &ID3D12GraphicsCommandList,
         constants: &Constants,
-        vbuf: &D3D12_VERTEX_BUFFER_VIEW,
-        ibuf: &D3D12_INDEX_BUFFER_VIEW,
+        vertices: &D3D12_VERTEX_BUFFER_VIEW,
+        indices: &D3D12_INDEX_BUFFER_VIEW,
     ) {
         unsafe {
             command_list.SetPipelineState(&self.pipeline_state);
             command_list.SetGraphicsRootSignature(&self.root_signature);
             command_list.IASetPrimitiveTopology(self.primitive_topology);
-            command_list.IASetVertexBuffers(0, Some(&[*vbuf]));
-            command_list.IASetIndexBuffer(Some(ibuf));
+            command_list.IASetVertexBuffers(0, Some(&[*vertices]));
+            command_list.IASetIndexBuffer(Some(indices));
             constants.write(command_list);
         }
     }
@@ -588,67 +672,97 @@ fn vertex_buffer_view<T: Copy>(
     }
 }
 
-fn create_white_pixel(
+fn upload_image(
     dx: &dx::Interfaces,
     command_list: &ID3D12GraphicsCommandList,
     upload_heap: &ID3D12Resource,
-    upload_memory: &mut temp_allocator::FrameAllocator,
+    allocator: &mut temp_allocator::FrameAllocator,
     descriptor_heap: &mut DescriptorHeap,
+    pixels: PixelBufferRef,
 ) -> Image {
-    let desc = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-        Alignment: 0,
-        Width: 1,
-        Height: 1,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: DXGI_FORMAT_R8G8B8A8_UINT,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-        Flags: D3D12_RESOURCE_FLAG_NONE,
+    // To avoid recalculating
+    let pixels_height = pixels.height();
+
+    let format = match pixels.format() {
+        PixelFormat::Rgba8 => DXGI_FORMAT_R8G8B8A8_UNORM,
     };
 
-    let mut image: Option<ID3D12Resource> = None;
-    unsafe {
-        dx.device
-            .CreateCommittedResource(
-                &D3D12_HEAP_PROPERTIES {
-                    Type: D3D12_HEAP_TYPE_DEFAULT,
-                    CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-                    MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-                    CreationNodeMask: 0,
-                    VisibleNodeMask: 0,
-                },
-                D3D12_HEAP_FLAG_NONE,
-                &desc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                None,
-                &mut image,
-            )
-            .unwrap();
-    }
-    let resource = image.unwrap();
+    let image = {
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: pixels.width().into(),
+            Height: pixels_height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
 
-    let upload_allocation = upload_memory.upload::<u8>(&[255, 255, 255, 255]).unwrap();
+        let mut image: Option<ID3D12Resource> = None;
+        unsafe {
+            dx.device
+                .CreateCommittedResource(
+                    &D3D12_HEAP_PROPERTIES {
+                        Type: D3D12_HEAP_TYPE_DEFAULT,
+                        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+                        CreationNodeMask: 0,
+                        VisibleNodeMask: 0,
+                    },
+                    D3D12_HEAP_FLAG_NONE,
+                    &desc,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    None,
+                    &mut image,
+                )
+                .unwrap();
+        }
+
+        image.unwrap()
+    };
+
+    let footprint = D3D12_SUBRESOURCE_FOOTPRINT {
+        Format: format,
+        Width: pixels.width(),
+        Height: pixels_height,
+        Depth: 1,
+        RowPitch: next_multiple_of_u32(
+            pixels.width() * (pixels.format().bytes_per_pixel() as u32),
+            D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
+        ),
+    };
+
+    let (mem, bytes) = allocator
+        .allocate(
+            u64::from(footprint.RowPitch) * u64::from(pixels_height),
+            D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT.into(),
+        )
+        .unwrap();
+
+    let bytes = bytes.expect("upload allocator with no host memory?");
+
+    for (i, row) in pixels.rows().enumerate() {
+        let offset = footprint.RowPitch as usize * i;
+        unsafe {
+            std::ptr::copy_nonoverlapping(row.as_ptr(), bytes.as_mut_ptr().add(offset), row.len());
+        }
+    }
 
     let placed_desc = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
-        Offset: upload_allocation.heap_offset,
-        Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
-            Format: DXGI_FORMAT_R8G8B8A8_UINT,
-            Width: 1,
-            Height: 1,
-            Depth: 1,
-            RowPitch: D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
-        },
+        Offset: mem.heap_offset,
+        Footprint: footprint,
     };
 
     unsafe {
         command_list.CopyTextureRegion(
             &D3D12_TEXTURE_COPY_LOCATION {
-                pResource: windows::core::ManuallyDrop::new(&resource),
+                pResource: windows::core::ManuallyDrop::new(&image),
                 Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
                 Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                     SubresourceIndex: 0,
@@ -668,30 +782,32 @@ fn create_white_pixel(
         );
 
         command_list.ResourceBarrier(&[transition_barrier(
-            &resource,
+            &image,
             D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         )]);
     }
 
-    let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-        Format: DXGI_FORMAT_R8G8B8A8_UINT,
-        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-            Texture2D: D3D12_TEX2D_SRV {
-                MostDetailedMip: 0,
-                MipLevels: 1,
-                PlaneSlice: 0,
-                ResourceMinLODClamp: 0.0,
+    let srv = {
+        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: 1,
+                    PlaneSlice: 0,
+                    ResourceMinLODClamp: 0.0,
+                },
             },
-        },
+        };
+
+        descriptor_heap.create_shader_resource_view(dx, &image, &desc)
     };
 
-    let srv = descriptor_heap.create_shader_resource_view(dx, &resource, &srv_desc);
-
     Image {
-        resource,
+        resource: image,
         last_use: Cell::new(SubmissionId::default()),
         rtv: Descriptor::default(),
         srv,
@@ -740,13 +856,15 @@ impl DescriptorHeap {
         };
 
         let allocator = BlockAllocator::new(
-            HeapOffset(unsafe { dx.device.GetDescriptorHandleIncrementSize(kind) } as u64),
+            HeapOffset(u64::from(unsafe {
+                dx.device.GetDescriptorHandleIncrementSize(kind)
+            })),
             max_descriptors,
         );
 
         Self {
-            kind,
             heap,
+            kind,
             cpu_start,
             gpu_start,
             allocator,
@@ -807,5 +925,15 @@ impl DescriptorHeap {
             dx.device.CreateRenderTargetView(resource, desc, handle.cpu);
         }
         handle
+    }
+}
+
+// Waiting until next_multiple_of stabilizes in std (https://github.com/rust-lang/rust/issues/88581).
+fn next_multiple_of_u32(value: u32, multiple: u32) -> u32 {
+    match value % multiple {
+        0 => value,
+        remainder => value
+            .checked_add(multiple - remainder)
+            .expect("int overflow"),
     }
 }
