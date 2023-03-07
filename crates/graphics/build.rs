@@ -44,6 +44,12 @@ fn compile(
         ShaderKind::Pixel => s!("ps_5_1"),
     };
 
+    let flags = if cfg!(debug_assertions) {
+        D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION
+    } else {
+        0
+    };
+
     let _ = unsafe {
         D3DCompileFromFile(
             path,
@@ -51,7 +57,7 @@ fn compile(
             None,
             entrypoint,
             shader,
-            0,
+            flags,
             0,
             &mut code,
             Some(&mut errors),
