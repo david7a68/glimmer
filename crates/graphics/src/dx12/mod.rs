@@ -104,3 +104,16 @@ fn transition_barrier(
         },
     }
 }
+
+struct UiShader {
+    root_signature: ID3D12RootSignature,
+}
+
+impl UiShader {
+    const UI_VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ui_vs.cso"));
+    const UI_PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ui_ps.cso"));
+
+    fn new(dx: &dx::Interfaces) -> Self {
+        todo!()
+    }
+}

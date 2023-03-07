@@ -21,10 +21,11 @@ features = [
     "Win32_Security",
 ]
 
-[dev-dependencies.windows]
+[build-dependencies.windows]
 # version = "0.43"
 git = "https://github.com/microsoft/windows-rs"
 features = [
     "Win32_Foundation",
-    "Win32_Graphics_Direct3D_Dxc",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
 ]
