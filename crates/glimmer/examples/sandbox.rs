@@ -33,7 +33,6 @@ struct AppWindow {
     window: Window,
     surface: Surface,
     graphics: Rc<GraphicsContext>,
-    resizing: bool,
 }
 
 impl AppWindow {
@@ -42,7 +41,6 @@ impl AppWindow {
             window,
             surface,
             graphics,
-            resizing: false,
         }
     }
 }
@@ -130,6 +128,7 @@ impl WindowHandler for AppWindow {
 
     fn on_idle(&mut self, _spawner: &mut dyn WindowSpawner<Self>) {
         // no-op
+        // self.window.request_redraw();
     }
 
     fn on_redraw(&mut self, _control: &mut dyn WindowSpawner<Self>) {

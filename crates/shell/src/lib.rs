@@ -368,6 +368,8 @@ impl<'a, Handler: WindowHandler> WindowDesc<'a, Handler> {
         let window = builder.build(target).unwrap();
         let id = window.id();
 
+        let extent = as_extent(window.inner_size());
+
         let handler = (self.handler)(Window {
             inner: window,
             deferred_destroy,
@@ -376,6 +378,7 @@ impl<'a, Handler: WindowHandler> WindowDesc<'a, Handler> {
         WindowState {
             id,
             handler,
+            extent,
             cursor_position: Point::zero(),
             repeated_key: None,
         }
@@ -428,6 +431,7 @@ impl Window {
 struct WindowState<Handler: WindowHandler> {
     id: winit::window::WindowId,
     handler: Handler,
+    extent: Extent<u32, ScreenSpace>,
     cursor_position: Point<i32, ScreenSpace>,
     repeated_key: Option<(winit::event::KeyboardInput, u16)>,
 }
@@ -521,9 +525,11 @@ where
 
                 match event {
                     WindowEvent::Resized(extent) => {
-                        window_state
-                            .handler
-                            .on_resize(&mut control, as_extent(extent));
+                        if as_extent(extent) != window_state.extent {
+                            window_state
+                                .handler
+                                .on_resize(&mut control, as_extent(extent));
+                        }
                     }
                     WindowEvent::CloseRequested => {
                         if window_state.handler.on_close_request(&mut control) {
