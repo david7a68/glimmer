@@ -1,0 +1,14 @@
+[package]
+name    = "glimmer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+geometry    = { path = "../geometry" }
+raw-window-handle = "0.5.0"
+renderer    = { path = "../renderer" }
+shell       = { path = "../shell" }
+widgets     = { path = "../widgets" }
+
+[[example]]
+name = "sandbox"

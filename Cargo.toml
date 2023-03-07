@@ -1,0 +1,6 @@
+[workspace]
+
+# resolver here necessary because wgpu won't build in workspaces otherwise (2022-12-08)
+resolver = "2"
+
+members = ["crates/*"]
