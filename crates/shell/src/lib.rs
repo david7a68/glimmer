@@ -1,45 +1,47 @@
-/// # Glimmer Shell
-/// 
-/// This crate provides a simple interface for creating and managing windows.
-/// 
-/// ## Implementation
-/// 
-/// The current implementation makes use of the [winit] crate to wrap OS
-/// facilities, and mostly provides a way to closely associate event handlers
-/// with per-window state. The goal here, is to provide this interface with as
-/// little code as possible without hiding useful functionality.
-/// 
-/// ### Why use Winit?
-/// 
-/// - Winit is a well-maintained crate that provides cross-platform windowing.
-/// - The API is simple. No judgement is made as to the quality of the
-///   implementation.
-/// 
-/// ### Why completely wrap Winit's API?
-/// 
-/// - Wrapping the API provides some insurance that changes to Winit's public
-///   API will not break the shell API. Wrapping the API is not a guarantee of
-///   course, but it does provide some additional measure of control.
-/// - Using a wrapper permits the option of using a different windowing library
-///   without disrupting the rest of the codebase.
-/// 
-/// ### Doesn't that introduce a lot of code?
-/// 
-/// - Not currently. The shell crate is currently less than 1k lines of code.
-///   Some expansion is certainly to be expected, but goal is to keep the crate
-///   to 2k lines or less including documentation.
-/// 
-/// ### What about performance?
-/// 
-/// - Each window event imposes a hash table lookup and a function call, with
-///   some trivial data transformations in between. Previous attempts at
-///   windowing suggest that a hash table would be required anyway, so any major
-///   performance cost would likely come from Winit.
+//! # Glimmer Shell
+//!
+//! This crate provides a simple interface for creating and managing windows.
+//!
+//! ## Implementation
+//!
+//! The current implementation makes use of the [winit] crate to wrap OS
+//! facilities, and mostly provides a way to closely associate event handlers
+//! with per-window state. The goal here, is to provide this interface with as
+//! little code as possible without hiding useful functionality.
+//!
+//! ### Why use Winit?
+//!
+//! - Winit is a well-maintained crate that provides cross-platform windowing.
+//! - The API is simple. No judgement is made as to the quality of the
+//!   implementation.
+//!
+//! ### Why completely wrap Winit's API?
+//!
+//! - Wrapping the API provides some insurance that changes to Winit's public
+//!   API will not break the shell API. Wrapping the API is not a guarantee of
+//!   course, but it does provide some additional measure of control.
+//! - Using a wrapper permits the option of using a different windowing library
+//!   without disrupting the rest of the codebase.
+//!
+//! ### Doesn't that introduce a lot of code?
+//!
+//! - Not currently. The shell crate is currently less than 1k lines of code.
+//!   Some expansion is certainly to be expected, but goal is to keep the crate
+//!   to 2k lines or less including documentation.
+//!
+//! ### What about performance?
+//!
+//! - Each window event imposes a hash table lookup and a function call, with
+//!   some trivial data transformations in between. Previous attempts at
+//!   windowing suggest that a hash table would be required anyway, so any major
+//!   performance cost would likely come from Winit.
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use geometry::{Extent, Offset, Point};
-use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+use geometry::{Extent, Offset, Point, ScreenSpace};
+use raw_window_handle::{
+    HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
+};
 use winit::{
     dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
     event::{Event, WindowEvent},
@@ -252,13 +254,17 @@ pub trait WindowHandler {
         spawner: &mut dyn WindowSpawner<Self>,
         button: MouseButton,
         state: ButtonState,
-        at: Point<i32>,
+        at: Point<i32, ScreenSpace>,
     );
 
     /// Called when the cursor moves within the bounds of the window.
     ///
     /// Captive cursor mode is not currently supported.
-    fn on_cursor_move(&mut self, spawner: &mut dyn WindowSpawner<Self>, at: Point<i32>);
+    fn on_cursor_move(
+        &mut self,
+        spawner: &mut dyn WindowSpawner<Self>,
+        at: Point<i32, ScreenSpace>,
+    );
 
     /// Called when a key is pressed or released.
     fn on_key(
@@ -269,7 +275,11 @@ pub trait WindowHandler {
     );
 
     /// Called when the window is resized.
-    fn on_resize(&mut self, spawner: &mut dyn WindowSpawner<Self>, inner_size: Extent<u32>);
+    fn on_resize(
+        &mut self,
+        spawner: &mut dyn WindowSpawner<Self>,
+        inner_size: Extent<u32, ScreenSpace>,
+    );
 
     /// Called when window DPI scaling changes. This may change if the user
     /// changes OS DPI or resolution settings, or if the window moves between
@@ -278,8 +288,10 @@ pub trait WindowHandler {
         &mut self,
         spawner: &mut dyn WindowSpawner<Self>,
         scale_factor: f64,
-        new_inner_size: Extent<u32>,
+        new_inner_size: Extent<u32, ScreenSpace>,
     );
+
+    fn on_idle(&mut self, spawner: &mut dyn WindowSpawner<Self>);
 
     /// Called when the OS requests that the window be redrawn.
     fn on_redraw(&mut self, spawner: &mut dyn WindowSpawner<Self>);
@@ -314,10 +326,10 @@ impl Default for WindowFlags {
 /// function on event loop start.
 pub struct WindowDesc<'a, Handler: WindowHandler> {
     pub title: &'a str,
-    pub size: Extent<u32>,
-    pub min_size: Option<Extent<u32>>,
-    pub max_size: Option<Extent<u32>>,
-    pub position: Option<Offset<i32>>,
+    pub size: Extent<u32, ScreenSpace>,
+    pub min_size: Option<Extent<u32, ScreenSpace>>,
+    pub max_size: Option<Extent<u32, ScreenSpace>>,
+    pub position: Option<Offset<i32, ScreenSpace>>,
     pub flags: WindowFlags,
     /// Constructor for the window handler.
     pub handler: &'a mut dyn FnMut(Window) -> Handler,
@@ -379,10 +391,20 @@ unsafe impl HasRawWindowHandle for Window {
     }
 }
 
+unsafe impl HasRawDisplayHandle for Window {
+    fn raw_display_handle(&self) -> RawDisplayHandle {
+        self.inner.raw_display_handle()
+    }
+}
+
 impl Window {
     #[must_use]
     pub fn id(&self) -> WindowId {
         WindowId(self.inner.id())
+    }
+
+    pub fn extent(&self) -> Extent<u32, ScreenSpace> {
+        as_extent(self.inner.inner_size())
     }
 
     pub fn set_title(&mut self, title: &str) {
@@ -392,13 +414,17 @@ impl Window {
     pub fn destroy(&self) {
         self.deferred_destroy.borrow_mut().push(self.inner.id());
     }
+
+    pub fn request_redraw(&self) {
+        self.inner.request_redraw();
+    }
 }
 
 #[must_use]
 struct WindowState<Handler: WindowHandler> {
     id: winit::window::WindowId,
     handler: Handler,
-    cursor_position: Point<i32>,
+    cursor_position: Point<i32, ScreenSpace>,
     repeated_key: Option<(winit::event::KeyboardInput, u16)>,
 }
 
@@ -470,7 +496,8 @@ where
     }
 
     event_loop.run(move |event, event_loop, control_flow| {
-        control_flow.set_wait();
+        // control_flow.set_wait();
+        control_flow.set_poll();
 
         let mut control = Control::new(
             event_loop,
@@ -579,6 +606,11 @@ where
                     _ => {}
                 }
             }
+            Event::MainEventsCleared => {
+                for window in windows.values_mut() {
+                    window.handler.on_idle(&mut control);
+                }
+            }
             Event::RedrawRequested(window_id) => {
                 let window_state = windows
                     .get_mut(&window_id)
@@ -605,19 +637,19 @@ where
     });
 }
 
-fn as_logical_size(size: Extent<u32>) -> LogicalSize<u32> {
+fn as_logical_size(size: Extent<u32, ScreenSpace>) -> LogicalSize<u32> {
     LogicalSize::new(size.width, size.height)
 }
 
-fn as_logical_position(position: Offset<i32>) -> LogicalPosition<i32> {
-    LogicalPosition::new(position.dx, position.dy)
+fn as_logical_position(position: Offset<i32, ScreenSpace>) -> LogicalPosition<i32> {
+    LogicalPosition::new(position.x, position.y)
 }
 
-fn as_extent(size: PhysicalSize<u32>) -> Extent<u32> {
+fn as_extent(size: PhysicalSize<u32>) -> Extent<u32, ScreenSpace> {
     Extent::new(size.width, size.height)
 }
 
-fn as_point(position: PhysicalPosition<i32>) -> Point<i32> {
+fn as_point(position: PhysicalPosition<i32>) -> Point<i32, ScreenSpace> {
     Point::new(position.x, position.y)
 }
 

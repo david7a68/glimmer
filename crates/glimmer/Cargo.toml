@@ -5,10 +5,13 @@ edition = "2021"
 
 [dependencies]
 geometry    = { path = "../geometry" }
-raw-window-handle = "0.5.0"
-renderer    = { path = "../renderer" }
+graphics    = { path = "../graphics" }
 shell       = { path = "../shell" }
 widgets     = { path = "../widgets" }
+raw-window-handle = "0.5.0"
 
 [[example]]
 name = "sandbox"
+
+[[example]]
+name = "window"
