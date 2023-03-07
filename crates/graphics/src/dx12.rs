@@ -85,13 +85,13 @@ impl GraphicsContext {
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             )]);
 
+            command_list.ClearRenderTargetView(target.rtv, [0.5, 0.5, 0.5, 1.0].as_ptr(), &[]);
+
             command_list.ResourceBarrier(&[transition_barrier(
                 &target.resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             )]);
-
-            command_list.ClearRenderTargetView(target.rtv, [0.5, 0.5, 0.5, 1.0].as_ptr(), &[]);
         }
 
         let fence_value = graphics.submit(allocator, &[command_list]);
