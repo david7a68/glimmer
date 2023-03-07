@@ -34,10 +34,19 @@ pub struct Radians<T: num::Real>(pub T);
 pub struct Degrees<T: num::Real>(pub T);
 
 pub trait Angle<T: num::Real>: Mul<T> {
+    #[must_use]
     fn to_radians(&self) -> Radians<T>;
+
+    #[must_use]
     fn to_degrees(&self) -> Degrees<T>;
+
+    #[must_use]
     fn sin(&self) -> T;
+
+    #[must_use]
     fn cos(&self) -> T;
+
+    #[must_use]
     fn sin_cos(&self) -> (T, T);
 }
 
@@ -123,6 +132,7 @@ where
 }
 
 impl<T, Unit> Point<T, Unit> {
+    #[must_use]
     pub fn new(x: T, y: T) -> Self {
         Self {
             x,
@@ -131,6 +141,7 @@ impl<T, Unit> Point<T, Unit> {
         }
     }
 
+    #[must_use]
     pub fn zero() -> Self
     where
         T: num::Zero,
@@ -138,6 +149,7 @@ impl<T, Unit> Point<T, Unit> {
         Self::new(T::zero(), T::zero())
     }
 
+    #[must_use]
     pub fn one() -> Self
     where
         T: num::One,
@@ -168,6 +180,7 @@ pub struct Offset<T, Unit = UndefinedUnit> {
 }
 
 impl<T, Unit> Offset<T, Unit> {
+    #[must_use]
     pub fn new(x: T, y: T) -> Self {
         Self {
             x,
@@ -176,6 +189,7 @@ impl<T, Unit> Offset<T, Unit> {
         }
     }
 
+    #[must_use]
     pub fn zero() -> Self
     where
         T: num::Zero,
@@ -183,6 +197,7 @@ impl<T, Unit> Offset<T, Unit> {
         Self::new(T::zero(), T::zero())
     }
 
+    #[must_use]
     pub fn one() -> Self
     where
         T: num::One,
@@ -215,6 +230,7 @@ pub struct Scale<T, Unit = UndefinedUnit> {
 }
 
 impl<T, Unit> Scale<T, Unit> {
+    #[must_use]
     pub fn new(x: T, y: T) -> Self {
         Self {
             x,
@@ -223,6 +239,7 @@ impl<T, Unit> Scale<T, Unit> {
         }
     }
 
+    #[must_use]
     pub fn zero() -> Self
     where
         T: num::Zero,
@@ -230,6 +247,7 @@ impl<T, Unit> Scale<T, Unit> {
         Self::new(T::zero(), T::zero())
     }
 
+    #[must_use]
     pub fn one() -> Self
     where
         T: num::One,
@@ -252,6 +270,7 @@ pub struct Extent<T, Unit = UndefinedUnit> {
 }
 
 impl<T, Unit> Extent<T, Unit> {
+    #[must_use]
     pub fn new(width: T, height: T) -> Self {
         Self {
             width,
@@ -260,6 +279,7 @@ impl<T, Unit> Extent<T, Unit> {
         }
     }
 
+    #[must_use]
     pub fn zero() -> Self
     where
         T: num::Zero,
@@ -287,10 +307,12 @@ pub struct Rect<T, Unit = UndefinedUnit> {
 }
 
 impl<T, Unit> Rect<T, Unit> {
+    #[must_use]
     pub fn new(p0: Point<T, Unit>, p1: Point<T, Unit>) -> Self {
         Self { p0, p1 }
     }
 
+    #[must_use]
     pub fn zero() -> Self
     where
         T: num::Zero,
@@ -298,6 +320,7 @@ impl<T, Unit> Rect<T, Unit> {
         Self::new(Point::zero(), Point::zero())
     }
 
+    #[must_use]
     pub fn extent(&self) -> Extent<T, Unit>
     where
         T: Sub<Output = T> + Copy,
@@ -328,6 +351,7 @@ pub struct Transform<T: num::Real, Src = UndefinedUnit, Dst = UndefinedUnit> {
 }
 
 impl<T: num::Real, Src, Dst> Transform<T, Src, Dst> {
+    #[must_use]
     pub fn identity() -> Self {
         Self {
             m11: T::one(),
@@ -341,6 +365,8 @@ impl<T: num::Real, Src, Dst> Transform<T, Src, Dst> {
         }
     }
 
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn translate(offset: Offset<T, Dst>) -> Self {
         Self {
             m11: T::one(),
@@ -354,6 +380,8 @@ impl<T: num::Real, Src, Dst> Transform<T, Src, Dst> {
         }
     }
 
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn scale(scale: Scale<T, Dst>) -> Self {
         Self {
             m11: scale.x,
@@ -367,6 +395,8 @@ impl<T: num::Real, Src, Dst> Transform<T, Src, Dst> {
         }
     }
 
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn rotate<A: Angle<T>>(angle: A) -> Self {
         let (s, c) = angle.sin_cos();
         Self {
@@ -381,6 +411,7 @@ impl<T: num::Real, Src, Dst> Transform<T, Src, Dst> {
         }
     }
 
+    #[must_use]
     pub fn then<NewDst>(&self, rhs: &Transform<T, Dst, NewDst>) -> Transform<T, Src, NewDst> {
         Transform {
             m11: self.m11 * rhs.m11 + self.m12 * rhs.m21,
@@ -394,31 +425,37 @@ impl<T: num::Real, Src, Dst> Transform<T, Src, Dst> {
         }
     }
 
+    #[must_use]
     pub fn then_translate(&self, offset: Offset<T, Dst>) -> Transform<T, Src, Dst> {
         self.then(&Transform::translate(offset))
     }
 
+    #[must_use]
     pub fn translate_then(&self, offset: Offset<T, Src>) -> Self {
         Transform::translate(offset).then(self)
     }
 
+    #[must_use]
     pub fn then_rotate<A: Angle<T>>(&self, angle: A) -> Self {
         self.then(&Transform::rotate(angle))
     }
 
+    #[must_use]
     pub fn rotate_then<A: Angle<T>>(&self, angle: A) -> Self {
         Transform::rotate(angle).then(self)
     }
 
+    #[must_use]
     pub fn then_scale(&self, scale: Scale<T, Dst>) -> Self {
         self.then(&Transform::scale(scale))
     }
 
+    #[must_use]
     pub fn scale_then(&self, scale: Scale<T, Src>) -> Self {
         Transform::scale(scale).then(self)
     }
 
-    pub fn transform_point(&self, point: Point<T, Src>) -> Point<T, Dst> {
+    pub fn transform_point(&self, point: &Point<T, Src>) -> Point<T, Dst> {
         Point::new(
             self.m11 * point.x + self.m12 * point.y + self.m31,
             self.m21 * point.x + self.m22 * point.y + self.m32,
@@ -517,10 +554,19 @@ pub mod num {
         + std::fmt::Display
         + Into<f32>
     {
+        #[must_use]
         fn sin(self) -> Self;
+
+        #[must_use]
         fn cos(self) -> Self;
+
+        #[must_use]
         fn sin_cos(self) -> (Self, Self);
+
+        #[must_use]
         fn radians_to_degrees(self) -> Self;
+
+        #[must_use]
         fn degrees_to_radians(self) -> Self;
     }
 

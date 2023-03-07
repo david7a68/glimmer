@@ -1,21 +1,8 @@
-use geometry::Point;
+use crate::Vertex;
 
-#[derive(Clone, Copy)]
-pub struct Color {
-    pub r: f32,
-    pub g: f32,
-    pub b: f32,
-    pub a: f32,
-}
-
-#[derive(Clone, Copy)]
-pub struct Vertex {
-    pub position: Point<f32>,
-    pub color: Color,
-}
-
+#[allow(clippy::module_name_repetitions)]
 #[repr(u16)]
-enum RenderGraphCommand {
+pub enum RenderGraphCommand {
     Root,
     DrawImmediate { first_index: u16, num_indices: u16 },
 }
@@ -27,19 +14,22 @@ struct RenderGraphNode {
     command: RenderGraphCommand,
 }
 
+#[allow(clippy::module_name_repetitions)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderGraphNodeId {
     index: u16,
 }
 
 impl RenderGraphNodeId {
+    #[must_use]
     pub const fn root() -> Self {
         Self { index: 0 }
     }
 }
 
 pub struct RenderGraph {
-    imm_indices: Vec<u16>,
-    imm_vertices: Vec<Vertex>,
+    pub(crate) imm_indices: Vec<u16>,
+    pub(crate) imm_vertices: Vec<Vertex>,
     nodes: Vec<RenderGraphNode>,
 }
 
@@ -59,8 +49,14 @@ impl Default for RenderGraph {
 }
 
 impl RenderGraph {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn get(&self, node: RenderGraphNodeId) -> &RenderGraphCommand {
+        &self.nodes[node.index as usize].command
     }
 
     pub fn iter_children(
@@ -97,6 +93,10 @@ impl RenderGraph {
     /// Embeds the given mesh into the render graph for drawing. Use this for
     /// small meshes that change frequently (every frame or thereabouts), such
     /// as UI elements.
+    ///
+    /// ## Panics
+    ///
+    /// May panic if the number of vertices exceeds `u16::MAX`.
     pub fn draw_immediate(
         &mut self,
         parent: RenderGraphNodeId,
@@ -106,7 +106,7 @@ impl RenderGraph {
         let vertex_offset = self.imm_vertices.len();
         self.imm_vertices.extend_from_slice(vertices);
 
-        let first_index = self.imm_vertices.len();
+        let first_index = self.imm_indices.len();
         self.imm_indices.extend_from_slice(indices);
         for index in &mut self.imm_indices[first_index..] {
             *index = (*index as usize + vertex_offset).try_into().unwrap();
@@ -125,12 +125,12 @@ impl RenderGraph {
 
         let parent = &mut self.nodes[parent.index as usize];
         let prev_sibling = parent.last_child as usize;
-        parent.last_child = node_id as u16;
+        parent.last_child = node_id;
 
         if parent.first_child == 0 {
-            parent.first_child = node_id as u16;
+            parent.first_child = node_id;
         } else {
-            self.nodes[prev_sibling].next = node_id as u16;
+            self.nodes[prev_sibling].next = node_id;
         }
     }
 }

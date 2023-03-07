@@ -3,6 +3,7 @@ use std::{
     rc::Rc,
 };
 
+#[allow(clippy::wildcard_imports)]
 use windows::{
     core::Interface,
     w,
@@ -119,8 +120,8 @@ impl Surface {
         let mut graphics_queue = self.graphics_queue.borrow_mut();
         graphics_queue.flush();
 
-        let _ = self.render_targets[0].take().unwrap();
-        let _ = self.render_targets[1].take().unwrap();
+        std::mem::drop(self.render_targets[0].take().unwrap());
+        std::mem::drop(self.render_targets[1].take().unwrap());
 
         unsafe {
             self.swapchain.ResizeBuffers(
@@ -210,6 +211,7 @@ impl Drop for Surface {
     }
 }
 
+#[allow(clippy::module_name_repetitions)]
 pub struct SurfaceImage<'a> {
     surface: &'a Surface,
 }

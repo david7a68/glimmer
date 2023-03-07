@@ -410,6 +410,7 @@ impl Window {
         WindowId(self.inner.id())
     }
 
+    #[must_use]
     pub fn extent(&self) -> Extent<u32, ScreenSpace> {
         as_extent(self.inner.inner_size())
     }
@@ -647,18 +648,22 @@ where
     });
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn as_logical_size(size: Extent<u32, ScreenSpace>) -> LogicalSize<u32> {
     LogicalSize::new(size.width, size.height)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn as_logical_position(position: Offset<i32, ScreenSpace>) -> LogicalPosition<i32> {
     LogicalPosition::new(position.x, position.y)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn as_extent(size: PhysicalSize<u32>) -> Extent<u32, ScreenSpace> {
     Extent::new(size.width, size.height)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn as_point(position: PhysicalPosition<i32>) -> Point<i32, ScreenSpace> {
     Point::new(position.x, position.y)
 }

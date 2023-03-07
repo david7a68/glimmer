@@ -1,3 +1,4 @@
+#[allow(clippy::wildcard_imports)]
 use windows::{
     core::{Interface, PCSTR},
     Win32::Graphics::{Direct3D::D3D_FEATURE_LEVEL_11_0, Direct3D12::*, Dxgi::*},

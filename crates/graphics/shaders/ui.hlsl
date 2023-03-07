@@ -5,8 +5,8 @@
 
 struct DrawConstants
 {
-    float screen_width;
-    float screen_height;
+    uint screen_width;
+    uint screen_height;
 };
 
 // Constants set by the root signature
@@ -29,8 +29,8 @@ VsOutput vertex_main(VsInput input)
 {
     VsOutput output;
 
-    output.position = float4(input.position.x / draw_constants.screen_width * 2.0f - 1.0f,
-                             input.position.y / draw_constants.screen_height * 2.0f - 1.0f,
+    output.position = float4((input.position.x / draw_constants.screen_width) * 2.0f - 1.0f,
+                             ((draw_constants.screen_height - input.position.y) / draw_constants.screen_height) * 2.0f - 1.0f,
                              0.0f, 1.0f);
     output.color = input.color;
 

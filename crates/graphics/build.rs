@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use windows::{s, w};
 
+#[derive(Clone, Copy)]
 enum ShaderKind {
     Vertex,
     Pixel,
@@ -34,7 +35,9 @@ fn compile(
     entrypoint: windows::core::PCSTR,
     artifact_name: &str,
 ) {
-    use windows::Win32::Graphics::Direct3D::Fxc::*;
+    use windows::Win32::Graphics::Direct3D::Fxc::{
+        D3DCompileFromFile, D3DCOMPILE_DEBUG, D3DCOMPILE_SKIP_OPTIMIZATION,
+    };
 
     let mut code = None;
     let mut errors = None;
@@ -50,7 +53,7 @@ fn compile(
         0
     };
 
-    let _ = unsafe {
+    let _basic_error = unsafe {
         D3DCompileFromFile(
             path,
             None,
@@ -65,8 +68,10 @@ fn compile(
     };
 
     if let Some(errors) = errors {
-        let eptr = unsafe { errors.GetBufferPointer() };
-        let estr = unsafe { std::slice::from_raw_parts(eptr.cast(), errors.GetBufferSize()) };
+        let estr = unsafe {
+            let eptr = errors.GetBufferPointer();
+            std::slice::from_raw_parts(eptr.cast(), errors.GetBufferSize())
+        };
         let errors = String::from_utf8_lossy(estr);
         panic!("{}", errors);
     }

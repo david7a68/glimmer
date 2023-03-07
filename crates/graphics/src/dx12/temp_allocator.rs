@@ -26,17 +26,17 @@ impl<'a> FrameAllocator<'a> {
     ///
     /// If the request returns `Error::OutOfMemory`,
     pub fn allocate(&mut self, size: u64, alignment: u64) -> Result<Allocation, Error> {
+        enum Adjust {
+            Align,
+            Wrap,
+        }
+
         let tail_ptr = self.allocator.bytes_freed % self.allocator.capacity;
         let base_ptr = self.bytes_allocated % self.allocator.capacity;
         let aligned_ptr = next_multiple_of(base_ptr, alignment);
 
         if size > self.allocator.capacity {
             return Err(Error::InsufficientCapacity);
-        }
-
-        enum Adjust {
-            Align,
-            Wrap,
         }
 
         let adjust_amount = match tail_ptr.cmp(&base_ptr) {
@@ -72,14 +72,15 @@ impl<'a> FrameAllocator<'a> {
         }
         .ok_or(Error::OutOfMemory)?;
 
-        let adjust_amount = match adjust_amount {
-            Adjust::Align => aligned_ptr - base_ptr,
-            Adjust::Wrap => self.allocator.capacity - base_ptr,
+        let (adjust_amount, heap_ptr) = match adjust_amount {
+            Adjust::Align => (aligned_ptr - base_ptr, aligned_ptr),
+            Adjust::Wrap => (self.allocator.capacity - base_ptr, 0),
         };
 
         let r = Ok(Allocation {
             size,
             offset: self.bytes_allocated + adjust_amount,
+            heap_offset: heap_ptr,
         });
 
         self.bytes_allocated += adjust_amount + size;
@@ -119,6 +120,7 @@ impl PartialOrd for FrameMarker {
 pub struct Allocation {
     pub size: u64,
     pub offset: u64,
+    pub heap_offset: u64,
 }
 
 pub struct Allocator {
@@ -134,10 +136,6 @@ impl Allocator {
             bytes_freed: 0,
             bytes_allocated: 0,
         }
-    }
-
-    pub fn bytes_free(&self) -> u64 {
-        self.capacity - (self.bytes_allocated - self.bytes_freed)
     }
 
     pub fn begin_frame(&mut self) -> FrameAllocator {
@@ -215,7 +213,8 @@ mod tests {
                 frame.allocate(20, 4),
                 Ok(Allocation {
                     size: 20,
-                    offset: 0
+                    offset: 0,
+                    heap_offset: 0,
                 })
             );
             frame.finish()
@@ -231,7 +230,8 @@ mod tests {
                 frame.allocate(70, 4),
                 Ok(Allocation {
                     size: 70,
-                    offset: 20
+                    offset: 20,
+                    heap_offset: 20,
                 })
             );
             frame.finish()
@@ -248,7 +248,8 @@ mod tests {
                 frame.allocate(20, 8),
                 Ok(Allocation {
                     size: 20,
-                    offset: 100
+                    offset: 100,
+                    heap_offset: 0,
                 })
             );
             frame.finish()
@@ -271,7 +272,8 @@ mod tests {
                 frame.allocate(15, 64).unwrap(),
                 Allocation {
                     size: 15,
-                    offset: 164
+                    offset: 164,
+                    heap_offset: 64,
                 }
             );
             frame.finish()
@@ -295,7 +297,8 @@ mod tests {
                 frame.allocate(80, 16),
                 Ok(Allocation {
                     size: 80,
-                    offset: 200
+                    offset: 200,
+                    heap_offset: 0,
                 })
             );
             frame.finish()

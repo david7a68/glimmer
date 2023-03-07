@@ -1,6 +1,6 @@
-use std::{cell::Cell, collections::VecDeque};
+use std::cell::Cell;
 
-use smallvec::SmallVec;
+#[allow(clippy::wildcard_imports)]
 use windows::{
     core::Interface,
     w,

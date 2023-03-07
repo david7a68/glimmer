@@ -1,7 +1,9 @@
 use std::rc::Rc;
 
 use geometry::{Extent, Point, ScreenSpace};
-use graphics::{GraphicsConfig, GraphicsContext, RenderGraph, Surface};
+use graphics::{
+    Color, GraphicsConfig, GraphicsContext, RenderGraph, RenderGraphNodeId, Surface, Vertex,
+};
 use shell::{
     ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
     WindowSpawner,
@@ -128,13 +130,47 @@ impl WindowHandler for AppWindow {
 
     fn on_idle(&mut self, _spawner: &mut dyn WindowSpawner<Self>) {
         // no-op
-        // self.window.request_redraw();
+        self.window.request_redraw();
     }
 
     fn on_redraw(&mut self, _control: &mut dyn WindowSpawner<Self>) {
         let image = self.surface.get_next_image();
 
-        let render_graph = RenderGraph::new();
+        let mut render_graph = RenderGraph::new();
+
+        render_graph.draw_immediate(
+            RenderGraphNodeId::root(),
+            &[
+                // Vertex {
+                //     position: Point::new(100.0, 100.0),
+                //     color: Color::new(1.0, 0.0, 0.0, 1.0),
+                // },
+                // Vertex {
+                //     position: Point::new(200.0, 200.0),
+                //     color: Color::new(0.0, 0.0, 1.0, 1.0),
+                // },
+                // Vertex {
+                //     position: Point::new(100.0, 200.0),
+                //     color: Color::new(0.0, 1.0, 0.0, 1.0),
+                // },
+                Vertex {
+                    position: Point::new(0.0, 0.0),
+                    color: Color::RED,
+                },
+                Vertex {
+                    position: Point::new(
+                        self.window.extent().width as f32,
+                        self.window.extent().height as f32,
+                    ),
+                    color: Color::GREEN,
+                },
+                Vertex {
+                    position: Point::new(0.0, self.window.extent().height as f32),
+                    color: Color::BLUE,
+                },
+            ],
+            &[0, 1, 2],
+        );
 
         self.graphics.draw(image.image(), &render_graph);
 
