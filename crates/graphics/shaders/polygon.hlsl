@@ -1,5 +1,3 @@
-// Root signature with scale/translate
-
 #define RS "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), \
                        RootConstants(num32BitConstants = 2, b0)"
 

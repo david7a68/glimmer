@@ -42,7 +42,7 @@ struct FrameInFlight {
 pub struct GraphicsContext {
     dx: Rc<dx::Interfaces>,
     graphics_queue: Rc<RefCell<graphics::Queue>>,
-    ui_shader: UiShader,
+    ui_shader: Polygon,
 
     upload_ptr: *mut std::ffi::c_void,
     upload_buffer: ID3D12Resource,
@@ -60,7 +60,7 @@ impl GraphicsContext {
 
         let graphics_queue = graphics::Queue::new(&dx);
 
-        let ui_shader = UiShader::new(&dx);
+        let ui_shader = Polygon::new(&dx);
 
         // create upload buffer
         let upload_buffer: ID3D12Resource = unsafe {
@@ -427,20 +427,16 @@ impl ShaderConstants {
     }
 }
 
-struct UiShader {
-    root_signature: ID3D12RootSignature,
-    pipeline_state: ID3D12PipelineState,
+struct Polygon {
+    shader: Shader,
 }
 
-impl UiShader {
-    const UI_VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ui_vs.cso"));
-    const UI_PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ui_ps.cso"));
+impl Polygon {
+    const UI_VERTEX_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/polygon_vs.cso"));
+    const UI_PIXEL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/polygon_ps.cso"));
 
     #[allow(clippy::too_many_lines)]
     fn new(dx: &dx::Interfaces) -> Self {
-        let root_signature =
-            unsafe { dx.device.CreateRootSignature(0, Self::UI_VERTEX_SHADER) }.unwrap();
-
         let input_elements = [
             D3D12_INPUT_ELEMENT_DESC {
                 SemanticName: s!("POSITION"),
@@ -462,6 +458,41 @@ impl UiShader {
             },
         ];
 
+        let shader = Shader::new(
+            dx,
+            Self::UI_VERTEX_SHADER,
+            Self::UI_PIXEL_SHADER,
+            None,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            &input_elements,
+        );
+
+        Self { shader }
+    }
+
+    fn bind(&self, command_list: &ID3D12GraphicsCommandList, constants: &ShaderConstants) {
+        self.shader.bind(command_list);
+        constants.write(command_list);
+        unsafe { command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
+    }
+}
+
+struct Shader {
+    root_signature: ID3D12RootSignature,
+    pipeline_state: ID3D12PipelineState,
+}
+
+impl Shader {
+    fn new(
+        dx: &dx::Interfaces,
+        vertex_shader: &[u8],
+        pixel_shader: &[u8],
+        geometry_shader: Option<&[u8]>,
+        format: DXGI_FORMAT,
+        input: &[D3D12_INPUT_ELEMENT_DESC],
+    ) -> Shader {
+        let root_signature = unsafe { dx.device.CreateRootSignature(0, vertex_shader) }.unwrap();
+
         let mut blend_targets = [D3D12_RENDER_TARGET_BLEND_DESC::default(); 8];
         blend_targets[0] = D3D12_RENDER_TARGET_BLEND_DESC {
             BlendEnable: true.into(),
@@ -477,18 +508,33 @@ impl UiShader {
         };
 
         let mut render_target_formats = [DXGI_FORMAT_UNKNOWN; 8];
-        render_target_formats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        render_target_formats[0] = format;
+
+        let gs = {
+            let mut gs = D3D12_SHADER_BYTECODE {
+                pShaderBytecode: std::ptr::null(),
+                BytecodeLength: 0,
+            };
+            if let Some(geometry_shader) = geometry_shader {
+                gs = D3D12_SHADER_BYTECODE {
+                    pShaderBytecode: geometry_shader.as_ptr().cast(),
+                    BytecodeLength: geometry_shader.len(),
+                };
+            }
+            gs
+        };
 
         let pipeline_info = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
             pRootSignature: windows::core::ManuallyDrop::new(&root_signature),
             VS: D3D12_SHADER_BYTECODE {
-                pShaderBytecode: Self::UI_VERTEX_SHADER.as_ptr().cast(),
-                BytecodeLength: Self::UI_VERTEX_SHADER.len(),
+                pShaderBytecode: vertex_shader.as_ptr().cast(),
+                BytecodeLength: vertex_shader.len(),
             },
             PS: D3D12_SHADER_BYTECODE {
-                pShaderBytecode: Self::UI_PIXEL_SHADER.as_ptr().cast(),
-                BytecodeLength: Self::UI_PIXEL_SHADER.len(),
+                pShaderBytecode: pixel_shader.as_ptr().cast(),
+                BytecodeLength: pixel_shader.len(),
             },
+            GS: gs,
             BlendState: D3D12_BLEND_DESC {
                 AlphaToCoverageEnable: false.into(),
                 IndependentBlendEnable: false.into(),
@@ -529,8 +575,8 @@ impl UiShader {
                 },
             },
             InputLayout: D3D12_INPUT_LAYOUT_DESC {
-                pInputElementDescs: input_elements.as_ptr(),
-                NumElements: u32::try_from(input_elements.len()).unwrap(),
+                pInputElementDescs: input.as_ptr(),
+                NumElements: u32::try_from(input.len()).unwrap(),
             },
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
             NumRenderTargets: 1,
@@ -553,12 +599,10 @@ impl UiShader {
         }
     }
 
-    fn bind(&self, command_list: &ID3D12GraphicsCommandList, constants: &ShaderConstants) {
+    fn bind(&self, command_list: &ID3D12GraphicsCommandList) {
         unsafe {
             command_list.SetPipelineState(&self.pipeline_state);
             command_list.SetGraphicsRootSignature(&self.root_signature);
-            command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
-        constants.write(command_list);
     }
 }

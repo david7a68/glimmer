@@ -16,16 +16,16 @@ fn main() {
 
 fn compile_shaders() {
     compile(
-        w!("shaders/ui.hlsl"),
+        w!("shaders/polygon.hlsl"),
         ShaderKind::Vertex,
         s!("vertex_main"),
-        "ui_vs.cso",
+        "polygon_vs.cso",
     );
     compile(
-        w!("shaders/ui.hlsl"),
+        w!("shaders/polygon.hlsl"),
         ShaderKind::Pixel,
         s!("pixel_main"),
-        "ui_ps.cso",
+        "polygon_ps.cso",
     );
 }
 
