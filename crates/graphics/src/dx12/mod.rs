@@ -20,17 +20,16 @@ use windows::{
 };
 
 use crate::{
-    render_graph::RenderGraph, GraphicsConfig, RenderGraphNodeId, RoundedRectVertex, Vertex,
+    render_graph::RenderGraph,
+    temp_allocator::{self, FrameMarker},
+    GraphicsConfig, RenderGraphNodeId, RoundedRectVertex, Vertex,
 };
 
 mod dx;
 mod graphics;
 mod surface;
-mod temp_allocator;
 
 pub use surface::{Surface, SurfaceImage};
-
-use self::temp_allocator::{Allocation, FrameMarker};
 
 struct Frame {
     barriers: SmallVec<[D3D12_RESOURCE_BARRIER; 2]>,
@@ -623,7 +622,7 @@ fn vertex_input(
 
 fn vertex_buffer_view<T: Copy>(
     heap: &ID3D12Resource,
-    allocation: &Allocation,
+    allocation: &temp_allocator::Allocation,
 ) -> D3D12_VERTEX_BUFFER_VIEW {
     D3D12_VERTEX_BUFFER_VIEW {
         BufferLocation: unsafe { heap.GetGPUVirtualAddress() } + allocation.heap_offset,

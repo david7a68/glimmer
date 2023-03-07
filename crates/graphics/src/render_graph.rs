@@ -147,38 +147,40 @@ impl RenderGraph {
         corner_radii: Option<[f32; 4]>,
     ) {
         let rect_center = rect.center();
+        let outer_radii = corner_radii.unwrap_or_default();
+        let inner_radii = [0.0; 4];
 
         let vertices = [
             RoundedRectVertex {
                 position: rect.top_left(),
                 rect_size: rect.extent(),
                 rect_center,
-                outer_radii: corner_radii.unwrap_or_default(),
-                inner_radii: [0.0; 4],
+                outer_radii,
+                inner_radii,
                 color: colors[0],
             },
             RoundedRectVertex {
                 position: rect.top_right(),
                 rect_size: rect.extent(),
                 rect_center,
-                outer_radii: corner_radii.unwrap_or_default(),
-                inner_radii: [0.0; 4],
+                outer_radii,
+                inner_radii,
                 color: colors[1],
             },
             RoundedRectVertex {
                 position: rect.bottom_right(),
                 rect_size: rect.extent(),
                 rect_center,
-                outer_radii: corner_radii.unwrap_or_default(),
-                inner_radii: [0.0; 4],
+                outer_radii,
+                inner_radii,
                 color: colors[2],
             },
             RoundedRectVertex {
                 position: rect.bottom_left(),
                 rect_size: rect.extent(),
                 rect_center,
-                outer_radii: corner_radii.unwrap_or_default(),
-                inner_radii: [0.0; 4],
+                outer_radii,
+                inner_radii,
                 color: colors[3],
             },
         ];

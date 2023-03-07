@@ -9,6 +9,8 @@
 //!   - Triangle Meshes
 //!     - Vertex colors
 //!     - Textured meshes
+//!   - Rounded Rectangles
+//!     - Inner and outer radii
 //!   - Vector graphics
 //!     - SVG-compatible paths
 //!   - Text
@@ -40,6 +42,7 @@ use geometry::{Extent, Point};
 use raw_window_handle::HasRawWindowHandle;
 
 mod render_graph;
+mod temp_allocator;
 
 #[cfg(target_os = "windows")]
 mod dx12;
@@ -76,6 +79,13 @@ impl Color {
         r: 0.0,
         g: 0.0,
         b: 1.0,
+        a: 1.0,
+    };
+
+    pub const BLACK: Self = Self {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
         a: 1.0,
     };
 
