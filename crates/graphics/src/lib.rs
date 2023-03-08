@@ -364,7 +364,7 @@ pub struct RenderTarget<'a> {
 }
 
 #[repr(transparent)]
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct Image {
     handle: Handle<platform::Image>,
 }

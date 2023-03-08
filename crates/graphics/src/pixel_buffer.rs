@@ -95,7 +95,7 @@ impl PixelBuffer {
 
     #[must_use]
     pub fn from_file(bytes: &[u8]) -> Self {
-        let (bytes, format, space) = if let Ok(mut reader) = {
+        let (bytes, width, format, color_space) = if let Ok(mut reader) = {
             let png = png::Decoder::new(bytes);
             png.read_info()
         } {
@@ -113,12 +113,12 @@ impl PixelBuffer {
                 _ => todo!("only 8-bit RGBA PNGs are supported at the moment"),
             };
 
-            let space = match info.srgb {
+            let color_space = match info.srgb {
                 Some(_) => ColorSpace::Srgb,
                 _ => todo!("color spaces other than SRGB are not supported yet"),
             };
 
-            (bytes, format, space)
+            (bytes, info.width, format, color_space)
         } else {
             todo!("only the PNG format is supported at the moment")
         };
@@ -126,8 +126,8 @@ impl PixelBuffer {
         Self {
             raw: RawPixelBuffer {
                 format,
-                color_space: space,
-                width: bytes.len() as u32 / format.bytes_per_pixel() as u32,
+                color_space,
+                width,
                 bytes: bytes.into(),
             },
         }

@@ -11,7 +11,11 @@ pub enum Error {
         requested: u64,
     },
     /// The heap is not large enough to satisfy the allocation request.
-    InsufficientCapacity,
+    InsufficientCapacity {
+        capacity: u64,
+        available: u64,
+        requested: u64,
+    },
     /// The allocator does not have a access to the heap.
     NoHeap,
 }

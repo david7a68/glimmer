@@ -35,7 +35,12 @@ impl<'a> FrameAllocator<'a> {
         let aligned_ptr = next_multiple_of(base_ptr, alignment);
 
         if size > self.allocator.capacity {
-            return Err(Error::InsufficientCapacity);
+            return Err(Error::InsufficientCapacity {
+                capacity: self.allocator.capacity,
+                available: self.allocator.capacity
+                    - (self.bytes_allocated - self.allocator.bytes_freed),
+                requested: size,
+            });
         }
 
         let adjust_amount = match tail_ptr.cmp(&base_ptr) {

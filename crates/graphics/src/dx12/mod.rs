@@ -51,7 +51,7 @@ pub struct GraphicsContext {
 }
 
 impl GraphicsContext {
-    const UPLOAD_BUFFER_SIZE: u64 = 1024 * 1024;
+    const UPLOAD_BUFFER_SIZE: u64 = 20 * 1024 * 1024;
     const MAX_TEXTURES: u32 = 1024;
 
     pub fn new(config: &GraphicsConfig) -> Self {
@@ -743,7 +743,7 @@ fn upload_image(
             u64::from(footprint.RowPitch) * u64::from(pixels_height),
             D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT.into(),
         )
-        .unwrap();
+        .expect("upload allocator at capacity");
 
     let bytes = bytes.expect("upload allocator with no host memory?");
 

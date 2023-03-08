@@ -9,6 +9,7 @@ graphics    = { path = "../graphics" }
 shell       = { path = "../shell" }
 widgets     = { path = "../widgets" }
 raw-window-handle = "0.5.0"
+crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
 
 [[example]]
 name = "sandbox"
