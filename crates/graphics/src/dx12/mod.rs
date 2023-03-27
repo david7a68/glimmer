@@ -24,7 +24,7 @@ use crate::{
     },
     pixel_buffer::{ColorSpace, PixelBufferRef, PixelFormat},
     render_graph::{RenderGraph, RenderGraphCommand},
-    Color, GraphicsConfig, PixelBuffer, RenderGraphNodeId, RoundedRectVertex, Vertex,
+    Color, GraphicsConfig, PixelBuffer, RenderGraphNodeId, RoundedRectVertex,
 };
 
 mod dx;
@@ -41,7 +41,6 @@ pub struct GraphicsContext {
 
     white_pixel: Image,
 
-    polygon_shader: Shader<ShaderConstants>,
     round_rect_shader: Shader<ShaderConstants>,
 
     upload_buffer: ID3D12Resource,
@@ -59,7 +58,6 @@ impl GraphicsContext {
 
         let mut graphics_queue = queue::Graphics::new(&dx);
 
-        let polygon_shader = create_polygon_shader(&dx);
         let round_rect_shader = create_rounded_rect_shader(&dx);
 
         let upload_buffer = create_buffer(
@@ -121,14 +119,6 @@ impl GraphicsContext {
                     .heap
                     .SetName(w!("Texture Descriptor Heap"))
                     .unwrap();
-                polygon_shader
-                    .pipeline_state
-                    .SetName(w!("Polygon Shader"))
-                    .unwrap();
-                polygon_shader
-                    .root_signature
-                    .SetName(w!("Polygon Root Signature"))
-                    .unwrap();
                 round_rect_shader
                     .pipeline_state
                     .SetName(w!("Round Rect Shader"))
@@ -145,7 +135,6 @@ impl GraphicsContext {
             dx,
             graphics_queue,
             white_pixel,
-            polygon_shader,
             round_rect_shader,
             upload_buffer,
             upload_allocator,
@@ -192,10 +181,7 @@ impl GraphicsContext {
 
         let mut frame_alloc = self.upload_allocator.begin_frame();
 
-        let (imm_vertex_view, imm_index_view, imm_rect_view) = {
-            let vertex_memory = frame_alloc.upload(&content.imm_vertices).unwrap();
-            let vertex_view = vertex_buffer_view::<Vertex>(&self.upload_buffer, &vertex_memory);
-
+        let (imm_index_view, imm_rect_view) = {
             let index_memory = frame_alloc.upload(&content.imm_indices).unwrap();
             let index_view = D3D12_INDEX_BUFFER_VIEW {
                 BufferLocation: unsafe { self.upload_buffer.GetGPUVirtualAddress() }
@@ -208,7 +194,7 @@ impl GraphicsContext {
             let rect_view =
                 vertex_buffer_view::<RoundedRectVertex>(&self.upload_buffer, &rect_memory);
 
-            (vertex_view, index_view, rect_view)
+            (index_view, rect_view)
         };
 
         let frame_marker = frame_alloc.finish();
@@ -259,7 +245,6 @@ impl GraphicsContext {
                 white_pixel: &self.white_pixel,
                 descriptor_heap: &self.descriptor_heap,
                 index_buffer: imm_index_view,
-                poly_vertex_buffer: imm_vertex_view,
                 rect_vertex_buffer: imm_rect_view,
             };
 
@@ -325,24 +310,6 @@ impl GraphicsContext {
                 RenderGraphCommand::Root => {
                     assert_eq!(node_id, RenderGraphNodeId::root());
                     break 'draw;
-                }
-                RenderGraphCommand::DrawImmediate {
-                    first_index,
-                    num_indices,
-                } => {
-                    self.polygon_shader.bind(
-                        command_list,
-                        &data.constants,
-                        &data.poly_vertex_buffer,
-                        &data.index_buffer,
-                    );
-
-                    unsafe {
-                        command_list.SetDescriptorHeaps(&[data.descriptor_heap.heap.clone()]);
-                        command_list.SetGraphicsRootDescriptorTable(1, data.white_pixel.srv.gpu);
-                    }
-
-                    (*first_index, *num_indices)
                 }
                 RenderGraphCommand::DrawRect {
                     first_index,
@@ -424,21 +391,6 @@ impl PushConstants for ShaderConstants {
             0,
         );
     }
-}
-
-fn create_polygon_shader(dx: &dx::Interfaces) -> Shader<ShaderConstants> {
-    Shader::new(
-        dx,
-        include_bytes!(concat!(env!("OUT_DIR"), "/polygon_vs.cso")),
-        include_bytes!(concat!(env!("OUT_DIR"), "/polygon_ps.cso")),
-        DXGI_FORMAT_R16G16B16A16_FLOAT,
-        D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-        &[
-            vertex_input(s!("POSITION"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
-            vertex_input(s!("TEXCOORD"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
-            vertex_input(s!("COLOR"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
-        ],
-    )
 }
 
 fn create_rounded_rect_shader(dx: &dx::Interfaces) -> Shader<ShaderConstants> {
@@ -599,7 +551,6 @@ struct RenderData<'a> {
     white_pixel: &'a Image,
     descriptor_heap: &'a DescriptorHeap,
     index_buffer: D3D12_INDEX_BUFFER_VIEW,
-    poly_vertex_buffer: D3D12_VERTEX_BUFFER_VIEW,
     rect_vertex_buffer: D3D12_VERTEX_BUFFER_VIEW,
 }
 

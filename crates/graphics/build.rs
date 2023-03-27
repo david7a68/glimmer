@@ -16,19 +16,6 @@ fn main() {
 
 fn compile_shaders() {
     compile(
-        w!("shaders/polygon.hlsl"),
-        ShaderKind::Vertex,
-        s!("vertex_main"),
-        "polygon_vs.cso",
-    );
-    compile(
-        w!("shaders/polygon.hlsl"),
-        ShaderKind::Pixel,
-        s!("pixel_main"),
-        "polygon_ps.cso",
-    );
-
-    compile(
         w!("shaders/rounded_rect.hlsl"),
         ShaderKind::Vertex,
         s!("vertex_main"),

@@ -106,17 +106,6 @@ impl Color {
     }
 }
 
-/// Assume that most polygons that are drawn will involve images (as in text).
-/// If that is the case, it is reasonable to only support polygons with texture
-/// coordinates, and use a dummy texture for polygons with only vertex colors.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Vertex {
-    pub position: Point<f32>,
-    pub uv: Point<f32>,
-    pub color: Color,
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RoundedRectVertex {

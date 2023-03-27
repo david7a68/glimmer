@@ -4,7 +4,7 @@ use geometry::{Extent, Point, Rect, ScreenSpace};
 use graphics::{
     Color, DrawRect, GraphicsConfig, GraphicsContext, Image, PixelBuffer,
     RectPart::{BottomLeft, BottomRight, Left, Right, TopLeft, TopRight},
-    RenderGraph, RenderGraphNodeId, Surface, Vertex,
+    RenderGraph, RenderGraphNodeId, Surface,
 };
 use shell::{
     ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
@@ -232,31 +232,6 @@ impl WindowHandler for AppWindow {
         let mut render_graph = RenderGraph::new();
 
         let _i = self.image_cache.get(&self.graphics, "D:/test.png");
-
-        render_graph.draw_polygon(
-            RenderGraphNodeId::root(),
-            &[
-                Vertex {
-                    position: Point::new(0.0, 0.0),
-                    uv: Point::new(0.0, 0.0),
-                    color: Color::RED,
-                },
-                Vertex {
-                    position: Point::new(
-                        self.window.extent().width as f32,
-                        self.window.extent().height as f32,
-                    ),
-                    uv: Point::new(0.0, 0.0),
-                    color: Color::GREEN,
-                },
-                Vertex {
-                    position: Point::new(0.0, self.window.extent().height as f32),
-                    uv: Point::new(0.0, 0.0),
-                    color: Color::BLUE,
-                },
-            ],
-            &[0, 1, 2],
-        );
 
         render_graph.draw_rect(
             RenderGraphNodeId::root(),
