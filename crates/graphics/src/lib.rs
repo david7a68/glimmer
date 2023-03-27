@@ -38,7 +38,7 @@
 
 use std::cell::RefCell;
 
-use geometry::{Extent, Point, Rect};
+use geometry::{Extent, Point, Px, Rect};
 use pixel_buffer::PixelBufferRef;
 use raw_window_handle::HasRawWindowHandle;
 
@@ -109,9 +109,9 @@ impl Color {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RoundedRectVertex {
-    pub position: Point<f32>,
-    pub rect_size: Extent<f32>,
-    pub rect_center: Point<f32>,
+    pub position: Point<f32, Px>,
+    pub rect_size: Extent<f32, Px>,
+    pub rect_center: Point<f32, Px>,
     pub outer_radii: [f32; 4],
     pub inner_radii: [f32; 4],
     pub color: Color,
@@ -132,16 +132,16 @@ pub use RectPart::*;
 
 #[derive(Clone)]
 pub struct DrawRect {
-    rect: Rect<f32>,
+    rect: Rect<f32, Px>,
     // top-left, top-right, bottom-left, bottom-right
     colors: [Color; 4],
     outer_radii: [f32; 4],
     inner_radii: [f32; 4],
-    image: Option<(Image, [Point<f32>; 4])>,
+    image: Option<(Image, [Point<f32, Px>; 4])>,
 }
 
 impl DrawRect {
-    pub fn new(rect: Rect<f32>) -> Self {
+    pub fn new(rect: Rect<f32, Px>) -> Self {
         Self {
             rect,
             colors: [Color::BLACK; 4],

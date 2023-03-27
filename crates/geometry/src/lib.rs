@@ -1,697 +1,91 @@
-use std::{
-    marker::PhantomData,
-    ops::{Add, Div, Mul, Sub},
-};
+use std::ops::{Add, AddAssign, Div, Sub};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UndefinedUnit;
+use euclid::num::One;
+pub use euclid::{Point2D as Point, Size2D as Extent, Vector2D as Offset};
 
-/// The finite 2D coordinate space of the actual render target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScreenSpace;
+#[derive(Clone, Copy)]
+pub struct Px();
 
-/// The infinite 2D coordinate space where objects are placed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorldSpace;
+#[derive(Clone, Copy)]
+pub struct ScreenPx();
 
-/// The object space is a per-object 2D coordinate system where the Y-axis
-/// points down. The origin can be changed by translating the object's
-/// vertices.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ObjectSpace;
+#[derive(Clone, Copy)]
+pub struct Rect<T, U>(euclid::Box2D<T, U>);
 
-/// The clip space is a 2D plane from -1 to 1 in both the X and Y axis. The Y
-/// axis points up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClipSpace;
-
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Radians<T: num::Real>(pub T);
-
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Degrees<T: num::Real>(pub T);
-
-pub trait Angle<T: num::Real>: Mul<T> {
-    #[must_use]
-    fn to_radians(&self) -> Radians<T>;
-
-    #[must_use]
-    fn to_degrees(&self) -> Degrees<T>;
-
-    #[must_use]
-    fn sin(&self) -> T;
-
-    #[must_use]
-    fn cos(&self) -> T;
-
-    #[must_use]
-    fn sin_cos(&self) -> (T, T);
-}
-
-impl<T: num::Real> Mul<T> for Radians<T> {
-    type Output = Radians<T>;
-
-    fn mul(self, rhs: T) -> Self::Output {
-        Radians(self.0 * rhs)
-    }
-}
-
-impl<T: num::Real> Angle<T> for Radians<T> {
-    fn to_radians(&self) -> Radians<T> {
-        *self
-    }
-
-    fn to_degrees(&self) -> Degrees<T> {
-        Degrees(self.0.radians_to_degrees())
-    }
-
-    fn sin(&self) -> T {
-        self.0.sin()
-    }
-
-    fn cos(&self) -> T {
-        self.0.cos()
-    }
-
-    fn sin_cos(&self) -> (T, T) {
-        self.0.sin_cos()
-    }
-}
-
-impl<T: num::Real> Mul<T> for Degrees<T> {
-    type Output = Degrees<T>;
-
-    fn mul(self, rhs: T) -> Self::Output {
-        Degrees(self.0 * rhs)
-    }
-}
-
-impl<T: num::Real> Angle<T> for Degrees<T> {
-    fn to_radians(&self) -> Radians<T> {
-        Radians(self.0.degrees_to_radians())
-    }
-
-    fn to_degrees(&self) -> Degrees<T> {
-        *self
-    }
-
-    fn sin(&self) -> T {
-        self.0.sin()
-    }
-
-    fn cos(&self) -> T {
-        self.0.cos()
-    }
-
-    fn sin_cos(&self) -> (T, T) {
-        self.0.sin_cos()
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq)]
-pub struct Point<T: num::Num, Unit = UndefinedUnit> {
-    pub x: T,
-    pub y: T,
-    _unit: PhantomData<Unit>,
-}
-
-impl<T: num::Num, Unit> Clone for Point<T, Unit> {
-    fn clone(&self) -> Self {
-        Self {
-            x: self.x,
-            y: self.y,
-            _unit: PhantomData,
-        }
-    }
-}
-
-impl<T: num::Num, Unit> Copy for Point<T, Unit> {}
-
-impl<T: num::Num, Unit> Point<T, Unit> {
-    #[must_use]
-    pub fn new(x: T, y: T) -> Self {
-        Self {
-            x,
-            y,
-            _unit: PhantomData,
-        }
-    }
-
-    #[must_use]
-    pub fn zero() -> Self
+impl<T, U> Rect<T, U> {
+    pub fn new(origin: Point<T, U>, extent: Extent<T, U>) -> Self
     where
-        T: num::Zero,
+        T: Copy + Add<T, Output = T>,
     {
-        Self::new(T::zero(), T::zero())
+        Self(euclid::Box2D::from_origin_and_size(origin, extent))
     }
 
-    #[must_use]
-    pub fn one() -> Self
+    pub fn top_left(&self) -> Point<T, U>
     where
-        T: num::One,
+        T: Copy,
     {
-        Self::new(T::one(), T::one())
+        self.0.min
+    }
+
+    pub fn bottom_right(&self) -> Point<T, U>
+    where
+        T: Copy,
+    {
+        self.0.max
+    }
+
+    pub fn top_right(&self) -> Point<T, U>
+    where
+        T: Copy + Add<T, Output = T>,
+    {
+        Point::new(self.0.max.x, self.0.min.y)
+    }
+
+    pub fn bottom_left(&self) -> Point<T, U>
+    where
+        T: Copy + Add<T, Output = T>,
+    {
+        Point::new(self.0.min.x, self.0.max.y)
+    }
+
+    pub fn extent(&self) -> Extent<T, U>
+    where
+        T: Copy + Sub<T, Output = T>,
+    {
+        self.0.size()
+    }
+
+    pub fn center(&self) -> Point<T, U>
+    where
+        T: Copy + One + Add<Output = T> + Div<Output = T>,
+    {
+        self.0.center()
+    }
+
+    pub fn intersection(&self, rhs: &Rect<T, U>) -> Option<Rect<T, U>>
+    where
+        T: Copy + PartialOrd,
+    {
+        self.0.intersection(&rhs.0).map(|r| Rect(r))
     }
 }
 
-impl<T: num::Num, Unit> Default for Point<T, Unit> {
-    fn default() -> Self {
-        Self::new(T::default(), T::default())
-    }
-}
-
-impl<T: num::Num, Unit> Add for Point<T, Unit> {
+impl<T, U> Add<Offset<T, U>> for Rect<T, U>
+where
+    T: Copy + Add<T, Output = T>,
+{
     type Output = Self;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        Self::Output::new(self.x + rhs.x, self.y + rhs.y)
+    fn add(self, rhs: Offset<T, U>) -> Self::Output {
+        Self(self.0.translate(rhs))
     }
 }
 
-impl<T: num::Num, Unit> Sub for Point<T, Unit> {
-    type Output = Offset<<T as Sub<T>>::Output, Unit>;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self::Output::new(self.x - rhs.x, self.y - rhs.y)
-    }
-}
-
-#[repr(C)]
-pub struct Offset<T: num::Num, Unit = UndefinedUnit> {
-    pub x: T,
-    pub y: T,
-    _unit: PhantomData<Unit>,
-}
-
-impl<T: num::Num, Unit> Offset<T, Unit> {
-    #[must_use]
-    pub fn new(x: T, y: T) -> Self {
-        Self {
-            x,
-            y,
-            _unit: PhantomData,
-        }
-    }
-
-    #[must_use]
-    pub fn zero() -> Self {
-        Self::new(T::zero(), T::zero())
-    }
-
-    #[must_use]
-    pub fn one() -> Self {
-        Self::new(T::one(), T::one())
-    }
-
-    #[must_use]
-    pub fn to_point(&self) -> Point<T, Unit> {
-        Point::new(self.x, self.y)
-    }
-}
-
-impl<T: num::Num, Unit> From<Point<T, Unit>> for Offset<T, Unit> {
-    fn from(point: Point<T, Unit>) -> Self {
-        Self {
-            x: point.x,
-            y: point.y,
-            _unit: PhantomData,
-        }
-    }
-}
-
-impl<T: num::Num, Unit> Div<T> for Offset<T, Unit> {
-    type Output = Self;
-
-    fn div(self, rhs: T) -> Self::Output {
-        Self::new(self.x / rhs, self.y / rhs)
-    }
-}
-
-impl<T: num::Num, Unit> Default for Offset<T, Unit> {
-    fn default() -> Self {
-        Self::new(T::default(), T::default())
-    }
-}
-
-#[repr(C)]
-pub struct Scale<T: num::Num, Unit = UndefinedUnit> {
-    pub x: T,
-    pub y: T,
-    _unit: PhantomData<Unit>,
-}
-
-impl<T: num::Num, Unit> Scale<T, Unit> {
-    #[must_use]
-    pub fn new(x: T, y: T) -> Self {
-        Self {
-            x,
-            y,
-            _unit: PhantomData,
-        }
-    }
-
-    #[must_use]
-    pub fn zero() -> Self {
-        Self::new(T::zero(), T::zero())
-    }
-
-    #[must_use]
-    pub fn one() -> Self {
-        Self::new(T::one(), T::one())
-    }
-}
-
-impl<T: num::Num, Unit> Default for Scale<T, Unit> {
-    fn default() -> Self {
-        Self::new(T::default(), T::default())
-    }
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct Extent<T: num::Num, Unit = UndefinedUnit> {
-    pub width: T,
-    pub height: T,
-    _unit: PhantomData<Unit>,
-}
-
-impl<T: num::Num, Unit> Extent<T, Unit> {
-    #[must_use]
-    pub fn new(width: T, height: T) -> Self {
-        Self {
-            width,
-            height,
-            _unit: PhantomData,
-        }
-    }
-
-    #[must_use]
-    pub fn zero() -> Self {
-        Self::new(T::zero(), T::zero())
-    }
-}
-
-impl<T: num::Num, Unit> Clone for Extent<T, Unit> {
-    fn clone(&self) -> Self {
-        Self {
-            width: self.width,
-            height: self.height,
-            _unit: PhantomData,
-        }
-    }
-}
-
-impl<T: num::Num, Unit> Copy for Extent<T, Unit> {}
-
-impl<T: num::Num, Unit> Default for Extent<T, Unit> {
-    fn default() -> Self {
-        Self::new(T::default(), T::default())
-    }
-}
-
-impl<T: num::Num, Unit> PartialEq for Extent<T, Unit> {
-    fn eq(&self, other: &Self) -> bool {
-        self.width == other.width && self.height == other.height
-    }
-}
-
-impl<T: num::Num, Unit> Div<T> for Extent<T, Unit> {
-    type Output = Self;
-
-    fn div(self, rhs: T) -> Self::Output {
-        Self::new(self.width / rhs, self.height / rhs)
-    }
-}
-
-#[repr(C)]
-#[derive(Clone)]
-pub struct Rect<T: num::Num, Unit = UndefinedUnit> {
-    pub p0: Point<T, Unit>,
-    pub p1: Point<T, Unit>,
-}
-
-impl<T: num::Num, Unit> Rect<T, Unit> {
-    #[must_use]
-    pub fn new(p0: Point<T, Unit>, p1: Point<T, Unit>) -> Self {
-        Self { p0, p1 }
-    }
-
-    #[must_use]
-    pub fn zero() -> Self
-    where
-        T: num::Zero,
-    {
-        Self::new(Point::zero(), Point::zero())
-    }
-
-    #[must_use]
-    pub fn extent(&self) -> Extent<T, Unit>
-    where
-        T: Sub<Output = T> + Copy,
-    {
-        Extent::new(self.p1.x - self.p0.x, self.p1.y - self.p0.y)
-    }
-
-    #[must_use]
-    pub fn center(&self) -> Point<T, Unit> {
-        self.p0 + ((self.p1 - self.p0) / (T::one() + T::one())).to_point()
-    }
-
-    #[must_use]
-    pub fn top_left(&self) -> Point<T, Unit> {
-        self.p0
-    }
-
-    #[must_use]
-    pub fn top_right(&self) -> Point<T, Unit> {
-        Point::new(self.p1.x, self.p0.y)
-    }
-
-    #[must_use]
-    pub fn bottom_left(&self) -> Point<T, Unit> {
-        Point::new(self.p0.x, self.p1.y)
-    }
-
-    #[must_use]
-    pub fn bottom_right(&self) -> Point<T, Unit> {
-        self.p1
-    }
-}
-
-/// A 2D transform stored as a 3x3 matrix in column-major order compressed into
-/// a 2x3 matrix.
-///
-/// ```text
-/// | m11 m12 0 |
-/// | m21 m22 0 |
-/// | m31 m32 1 |
-/// ```
-#[repr(C)]
-#[derive(Copy)]
-pub struct Transform<T: num::Real, Src = UndefinedUnit, Dst = UndefinedUnit> {
-    pub m11: T,
-    pub m12: T,
-    pub m21: T,
-    pub m22: T,
-    pub m31: T,
-    pub m32: T,
-    _src: PhantomData<Src>,
-    _dst: PhantomData<Dst>,
-}
-
-impl<T: num::Real, Src, Dst> Transform<T, Src, Dst> {
-    #[must_use]
-    pub fn identity() -> Self {
-        Self {
-            m11: T::one(),
-            m12: T::zero(),
-            m21: T::zero(),
-            m22: T::one(),
-            m31: T::zero(),
-            m32: T::zero(),
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-
-    #[must_use]
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn translate(offset: Offset<T, Dst>) -> Self {
-        Self {
-            m11: T::one(),
-            m12: T::zero(),
-            m21: T::zero(),
-            m22: T::one(),
-            m31: offset.x,
-            m32: offset.y,
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-
-    #[must_use]
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn scale(scale: Scale<T, Dst>) -> Self {
-        Self {
-            m11: scale.x,
-            m12: T::zero(),
-            m21: T::zero(),
-            m22: scale.y,
-            m31: T::zero(),
-            m32: T::zero(),
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-
-    #[must_use]
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn rotate<A: Angle<T>>(angle: A) -> Self {
-        let (s, c) = angle.sin_cos();
-        Self {
-            m11: c,
-            m12: s,
-            m21: -s,
-            m22: c,
-            m31: T::zero(),
-            m32: T::zero(),
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-
-    #[must_use]
-    pub fn then<NewDst>(&self, rhs: &Transform<T, Dst, NewDst>) -> Transform<T, Src, NewDst> {
-        Transform {
-            m11: self.m11 * rhs.m11 + self.m12 * rhs.m21,
-            m12: self.m11 * rhs.m12 + self.m12 * rhs.m22,
-            m21: self.m21 * rhs.m11 + self.m22 * rhs.m21,
-            m22: self.m21 * rhs.m12 + self.m22 * rhs.m22,
-            m31: self.m31 * rhs.m11 + self.m32 * rhs.m21 + rhs.m31,
-            m32: self.m31 * rhs.m12 + self.m32 * rhs.m22 + rhs.m32,
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-
-    #[must_use]
-    pub fn then_translate(&self, offset: Offset<T, Dst>) -> Transform<T, Src, Dst> {
-        self.then(&Transform::translate(offset))
-    }
-
-    #[must_use]
-    pub fn translate_then(&self, offset: Offset<T, Src>) -> Self {
-        Transform::translate(offset).then(self)
-    }
-
-    #[must_use]
-    pub fn then_rotate<A: Angle<T>>(&self, angle: A) -> Self {
-        self.then(&Transform::rotate(angle))
-    }
-
-    #[must_use]
-    pub fn rotate_then<A: Angle<T>>(&self, angle: A) -> Self {
-        Transform::rotate(angle).then(self)
-    }
-
-    #[must_use]
-    pub fn then_scale(&self, scale: Scale<T, Dst>) -> Self {
-        self.then(&Transform::scale(scale))
-    }
-
-    #[must_use]
-    pub fn scale_then(&self, scale: Scale<T, Src>) -> Self {
-        Transform::scale(scale).then(self)
-    }
-
-    pub fn transform_point(&self, point: &Point<T, Src>) -> Point<T, Dst> {
-        Point::new(
-            self.m11 * point.x + self.m12 * point.y + self.m31,
-            self.m21 * point.x + self.m22 * point.y + self.m32,
-        )
-    }
-
-    pub fn with_src<NewSrc>(&self) -> Transform<T, NewSrc, Dst> {
-        Transform {
-            m11: self.m11,
-            m12: self.m12,
-            m21: self.m21,
-            m22: self.m22,
-            m31: self.m31,
-            m32: self.m32,
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-
-    pub fn with_dst<NewDst>(&self) -> Transform<T, Src, NewDst> {
-        Transform {
-            m11: self.m11,
-            m12: self.m12,
-            m21: self.m21,
-            m22: self.m22,
-            m31: self.m31,
-            m32: self.m32,
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-
-    pub fn as_matrix4x4(&self) -> [[T; 4]; 4] {
-        [
-            [self.m11, self.m12, T::zero(), T::zero()],
-            [self.m21, self.m22, T::zero(), T::zero()],
-            [self.m31, self.m32, T::one(), T::zero()],
-            [T::zero(), T::zero(), T::zero(), T::one()],
-        ]
-    }
-}
-
-impl<T: num::Real, Src, Dst> Clone for Transform<T, Src, Dst> {
-    fn clone(&self) -> Self {
-        Self {
-            m11: self.m11,
-            m12: self.m12,
-            m21: self.m21,
-            m22: self.m22,
-            m31: self.m31,
-            m32: self.m32,
-            _src: PhantomData,
-            _dst: PhantomData,
-        }
-    }
-}
-
-impl<T: num::Real, Src, Dst> Default for Transform<T, Src, Dst> {
-    fn default() -> Self {
-        Self::identity()
-    }
-}
-
-impl<T: num::Real, Src, Dst> std::fmt::Debug for Transform<T, Src, Dst> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(
-            f,
-            "Transform {{ m11: {}, m12: {}, m21: {}, m22: {}, m31: {}, m32: {} }}",
-            self.m11, self.m12, self.m21, self.m22, self.m31, self.m32
-        )
-    }
-}
-
-pub mod num {
-    use std::ops::{Add, Div, Mul, Neg, Sub};
-
-    pub trait Zero {
-        fn zero() -> Self;
-    }
-
-    pub trait One {
-        fn one() -> Self;
-    }
-
-    pub trait Num:
-        Zero
-        + One
-        + Sized
-        + Copy
-        + Default
-        + Add<Output = Self>
-        + Sub<Output = Self>
-        + Mul<Output = Self>
-        + Div<Output = Self>
-        + PartialOrd
-        + std::fmt::Debug
-        + std::fmt::Display
-    {
-    }
-
-    pub trait Signed: Num + Neg<Output = Self> {}
-
-    pub trait Real: Signed + Into<f32> {
-        #[must_use]
-        fn sin(self) -> Self;
-
-        #[must_use]
-        fn cos(self) -> Self;
-
-        #[must_use]
-        fn sin_cos(self) -> (Self, Self);
-
-        #[must_use]
-        fn radians_to_degrees(self) -> Self;
-
-        #[must_use]
-        fn degrees_to_radians(self) -> Self;
-    }
-
-    impl Zero for i32 {
-        fn zero() -> Self {
-            0
-        }
-    }
-
-    impl One for i32 {
-        fn one() -> Self {
-            1
-        }
-    }
-
-    impl Num for i32 {}
-
-    impl Signed for i32 {}
-
-    impl Zero for u32 {
-        fn zero() -> Self {
-            0
-        }
-    }
-
-    impl One for u32 {
-        fn one() -> Self {
-            1
-        }
-    }
-
-    impl Num for u32 {}
-
-    impl Zero for f32 {
-        fn zero() -> Self {
-            0.0
-        }
-    }
-
-    impl One for f32 {
-        fn one() -> Self {
-            1.0
-        }
-    }
-
-    impl Num for f32 {}
-
-    impl Signed for f32 {}
-
-    impl Real for f32 {
-        fn sin(self) -> Self {
-            self.sin()
-        }
-
-        fn cos(self) -> Self {
-            self.cos()
-        }
-
-        fn sin_cos(self) -> (Self, Self) {
-            self.sin_cos()
-        }
-
-        fn radians_to_degrees(self) -> Self {
-            self * 180.0 / std::f32::consts::PI
-        }
-
-        fn degrees_to_radians(self) -> Self {
-            self * std::f32::consts::PI / 180.0
-        }
+impl<T, U> AddAssign<Offset<T, U>> for Rect<T, U>
+where
+    T: Copy + Add<T, Output = T>,
+{
+    fn add_assign(&mut self, rhs: Offset<T, U>) {
+        self.0 = self.0.translate(rhs);
     }
 }

@@ -2,7 +2,7 @@
 
 use std::{cell::Cell, ptr::NonNull};
 
-use geometry::{Extent, ScreenSpace};
+use geometry::{Extent, ScreenPx};
 use raw_window_handle::RawWindowHandle;
 
 use windows::{core::Interface, w, Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY};
@@ -379,7 +379,7 @@ fn transition_barrier(
 }
 
 struct ShaderConstants {
-    viewport: Extent<u32, ScreenSpace>,
+    viewport: Extent<u32, ScreenPx>,
 }
 
 impl PushConstants for ShaderConstants {

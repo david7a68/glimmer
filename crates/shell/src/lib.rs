@@ -38,7 +38,7 @@
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use geometry::{Extent, Offset, Point, ScreenSpace};
+use geometry::{Extent, Offset, Point, ScreenPx};
 use raw_window_handle::{
     HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
@@ -255,17 +255,13 @@ pub trait WindowHandler {
         spawner: &mut dyn WindowSpawner<Self>,
         button: MouseButton,
         state: ButtonState,
-        at: Point<i32, ScreenSpace>,
+        at: Point<i32, ScreenPx>,
     );
 
     /// Called when the cursor moves within the bounds of the window.
     ///
     /// Captive cursor mode is not currently supported.
-    fn on_cursor_move(
-        &mut self,
-        spawner: &mut dyn WindowSpawner<Self>,
-        at: Point<i32, ScreenSpace>,
-    );
+    fn on_cursor_move(&mut self, spawner: &mut dyn WindowSpawner<Self>, at: Point<i32, ScreenPx>);
 
     /// Called when a key is pressed or released.
     fn on_key(
@@ -279,7 +275,7 @@ pub trait WindowHandler {
     fn on_resize(
         &mut self,
         spawner: &mut dyn WindowSpawner<Self>,
-        inner_size: Extent<u32, ScreenSpace>,
+        inner_size: Extent<u32, ScreenPx>,
     );
 
     /// Called when window DPI scaling changes. This may change if the user
@@ -289,7 +285,7 @@ pub trait WindowHandler {
         &mut self,
         spawner: &mut dyn WindowSpawner<Self>,
         scale_factor: f64,
-        new_inner_size: Extent<u32, ScreenSpace>,
+        new_inner_size: Extent<u32, ScreenPx>,
     );
 
     fn on_idle(&mut self, spawner: &mut dyn WindowSpawner<Self>);
@@ -327,10 +323,10 @@ impl Default for WindowFlags {
 /// function on event loop start.
 pub struct WindowDesc<'a, Handler: WindowHandler> {
     pub title: &'a str,
-    pub size: Extent<u32, ScreenSpace>,
-    pub min_size: Option<Extent<u32, ScreenSpace>>,
-    pub max_size: Option<Extent<u32, ScreenSpace>>,
-    pub position: Option<Offset<i32, ScreenSpace>>,
+    pub size: Extent<u32, ScreenPx>,
+    pub min_size: Option<Extent<u32, ScreenPx>>,
+    pub max_size: Option<Extent<u32, ScreenPx>>,
+    pub position: Option<Offset<i32, ScreenPx>>,
     pub flags: WindowFlags,
     /// Constructor for the window handler.
     pub handler: &'a mut dyn FnMut(Window) -> Handler,
@@ -411,7 +407,7 @@ impl Window {
     }
 
     #[must_use]
-    pub fn extent(&self) -> Extent<u32, ScreenSpace> {
+    pub fn extent(&self) -> Extent<u32, ScreenPx> {
         as_extent(self.inner.inner_size())
     }
 
@@ -432,8 +428,8 @@ impl Window {
 struct WindowState<Handler: WindowHandler> {
     id: winit::window::WindowId,
     handler: Handler,
-    extent: Extent<u32, ScreenSpace>,
-    cursor_position: Point<i32, ScreenSpace>,
+    extent: Extent<u32, ScreenPx>,
+    cursor_position: Point<i32, ScreenPx>,
     repeated_key: Option<(winit::event::KeyboardInput, u16)>,
 }
 
@@ -649,22 +645,22 @@ where
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn as_logical_size(size: Extent<u32, ScreenSpace>) -> LogicalSize<u32> {
+fn as_logical_size(size: Extent<u32, ScreenPx>) -> LogicalSize<u32> {
     LogicalSize::new(size.width, size.height)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn as_logical_position(position: Offset<i32, ScreenSpace>) -> LogicalPosition<i32> {
+fn as_logical_position(position: Offset<i32, ScreenPx>) -> LogicalPosition<i32> {
     LogicalPosition::new(position.x, position.y)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn as_extent(size: PhysicalSize<u32>) -> Extent<u32, ScreenSpace> {
+fn as_extent(size: PhysicalSize<u32>) -> Extent<u32, ScreenPx> {
     Extent::new(size.width, size.height)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn as_point(position: PhysicalPosition<i32>) -> Point<i32, ScreenSpace> {
+fn as_point(position: PhysicalPosition<i32>) -> Point<i32, ScreenPx> {
     Point::new(position.x, position.y)
 }
 

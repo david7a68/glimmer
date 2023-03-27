@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use geometry::{Extent, Point, Rect, ScreenSpace};
+use geometry::{Extent, Point, Rect, ScreenPx};
 use graphics::{
     Color, DrawRect, GraphicsConfig, GraphicsContext, Image, PixelBuffer,
     RectPart::{BottomLeft, BottomRight, Left, Right, TopLeft, TopRight},
@@ -150,7 +150,7 @@ impl WindowHandler for AppWindow {
         _control: &mut dyn WindowSpawner<Self>,
         _button: MouseButton,
         _state: ButtonState,
-        _at: Point<i32, ScreenSpace>,
+        _at: Point<i32, ScreenPx>,
     ) {
         // no-op
     }
@@ -158,7 +158,7 @@ impl WindowHandler for AppWindow {
     fn on_cursor_move(
         &mut self,
         _control: &mut dyn WindowSpawner<Self>,
-        _at: Point<i32, ScreenSpace>,
+        _at: Point<i32, ScreenPx>,
     ) {
         // no-op
     }
@@ -207,7 +207,7 @@ impl WindowHandler for AppWindow {
     fn on_resize(
         &mut self,
         _control: &mut dyn WindowSpawner<Self>,
-        _inner_size: Extent<u32, ScreenSpace>,
+        _inner_size: Extent<u32, ScreenPx>,
     ) {
         self.graphics.resize(&mut self.surface);
     }
@@ -216,7 +216,7 @@ impl WindowHandler for AppWindow {
         &mut self,
         _control: &mut dyn WindowSpawner<Self>,
         _scale_factor: f64,
-        _new_inner_size: Extent<u32, ScreenSpace>,
+        _new_inner_size: Extent<u32, ScreenPx>,
     ) {
         // no-op
     }
@@ -237,7 +237,7 @@ impl WindowHandler for AppWindow {
             RenderGraphNodeId::root(),
             &DrawRect::new(Rect::new(
                 Point::new(800.0, 100.0),
-                Point::new(1000.0, 300.0),
+                Extent::new(400.0, 400.0),
             ))
             .with_colors([
                 TopLeft(Color::RED),
@@ -252,7 +252,7 @@ impl WindowHandler for AppWindow {
             RenderGraphNodeId::root(),
             &DrawRect::new(Rect::new(
                 Point::new(400.0, 100.0),
-                Point::new(600.0, 300.0),
+                Extent::new(400.0, 400.0),
             ))
             .with_radii([BottomLeft(20.0), Right(300.0)])
             .with_colors([
