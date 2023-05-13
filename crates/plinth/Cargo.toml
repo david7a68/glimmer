@@ -1,5 +1,5 @@
 [package]
-name = "visuals"
+name = "plinth"
 version = "0.1.0"
 edition = "2021"
 
