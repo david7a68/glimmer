@@ -1,5 +1,5 @@
 [package]
-name = "graphics"
+name = "visuals"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,6 +7,8 @@ edition = "2021"
 geometry = { path = "../geometry" }
 structures = { path = "../structures" }
 
+winit = "0.27.5"
+bitflags = "1.3.2"
 raw-window-handle = "0.5.0"
 smallvec = { version = "1.10", features = ["union", "const_generics"] }
 png = "0.17.7"

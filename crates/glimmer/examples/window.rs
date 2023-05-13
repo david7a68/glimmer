@@ -1,5 +1,5 @@
 use geometry::{Extent, Point, ScreenPx};
-use shell::{
+use visuals::window::{
     ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
     WindowSpawner,
 };
@@ -15,7 +15,7 @@ fn main() {
         handler: &mut AppWindow::new,
     };
 
-    shell::run([main_window]);
+    visuals::window::enter_event_loop([main_window]);
 }
 
 struct AppWindow {

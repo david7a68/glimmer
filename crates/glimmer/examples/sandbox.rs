@@ -1,14 +1,14 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use geometry::{Extent, Point, Rect, ScreenPx};
-use graphics::{
+use visuals::{
+    window::{
+        ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
+        WindowSpawner,
+    },
     Color, DrawRect, GraphicsConfig, GraphicsContext, Image, PixelBuffer,
     RectPart::{BottomLeft, BottomRight, Left, Right, TopLeft, TopRight},
     RenderGraph, RenderGraphNodeId, Surface,
-};
-use shell::{
-    ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
-    WindowSpawner,
 };
 
 #[derive(Clone)]
@@ -109,7 +109,7 @@ fn main() {
         },
     };
 
-    shell::run([main_window]);
+    visuals::window::enter_event_loop([main_window]);
 }
 
 struct AppWindow {

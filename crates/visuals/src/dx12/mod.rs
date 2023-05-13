@@ -174,7 +174,6 @@ impl GraphicsContext {
         let target = target.image;
 
         let (rec, old_marker) = self.graphics_queue.record(&self.dx);
-
         if let Some(old_marker) = old_marker {
             self.upload_allocator.free_frame(old_marker);
         }
@@ -182,17 +181,21 @@ impl GraphicsContext {
         let mut frame_alloc = self.upload_allocator.begin_frame();
 
         let (imm_index_view, imm_rect_view) = {
+            let upload_address = unsafe { self.upload_buffer.GetGPUVirtualAddress() };
+
             let index_memory = frame_alloc.upload(&content.imm_indices).unwrap();
             let index_view = D3D12_INDEX_BUFFER_VIEW {
-                BufferLocation: unsafe { self.upload_buffer.GetGPUVirtualAddress() }
-                    + index_memory.heap_offset,
+                BufferLocation: upload_address + index_memory.heap_offset,
                 SizeInBytes: index_memory.size as u32,
                 Format: DXGI_FORMAT_R16_UINT,
             };
 
             let rect_memory = frame_alloc.upload(&content.imm_rect_vertices).unwrap();
-            let rect_view =
-                vertex_buffer_view::<RoundedRectVertex>(&self.upload_buffer, &rect_memory);
+            let rect_view = D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: upload_address + rect_memory.heap_offset,
+                SizeInBytes: rect_memory.size as u32,
+                StrideInBytes: std::mem::size_of::<RoundedRectVertex>() as u32,
+            };
 
             (index_view, rect_view)
         };
@@ -297,7 +300,6 @@ impl GraphicsContext {
         image
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn record_render_graph(
         &self,
         command_list: &ID3D12GraphicsCommandList,
@@ -609,17 +611,6 @@ fn vertex_input(
         AlignedByteOffset: D3D12_APPEND_ALIGNED_ELEMENT,
         InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
         InstanceDataStepRate: 0,
-    }
-}
-
-fn vertex_buffer_view<T: Copy>(
-    heap: &ID3D12Resource,
-    allocation: &temp_allocator::Allocation,
-) -> D3D12_VERTEX_BUFFER_VIEW {
-    D3D12_VERTEX_BUFFER_VIEW {
-        BufferLocation: unsafe { heap.GetGPUVirtualAddress() } + allocation.heap_offset,
-        SizeInBytes: u32::try_from(allocation.size).unwrap(),
-        StrideInBytes: u32::try_from(std::mem::size_of::<T>()).unwrap(),
     }
 }
 

@@ -1,41 +1,3 @@
-//! # Glimmer Shell
-//!
-//! This crate provides a simple interface for creating and managing windows.
-//!
-//! ## Implementation
-//!
-//! The current implementation makes use of the [winit] crate to wrap OS
-//! facilities, and mostly provides a way to closely associate event handlers
-//! with per-window state. The goal here, is to provide this interface with as
-//! little code as possible without hiding useful functionality.
-//!
-//! ### Why use Winit?
-//!
-//! - Winit is a well-maintained crate that provides cross-platform windowing.
-//! - The API is simple. No judgement is made as to the quality of the
-//!   implementation.
-//!
-//! ### Why completely wrap Winit's API?
-//!
-//! - Wrapping the API provides some insurance that changes to Winit's public
-//!   API will not break the shell API. Wrapping the API is not a guarantee of
-//!   course, but it does provide some additional measure of control.
-//! - Using a wrapper permits the option of using a different windowing library
-//!   without disrupting the rest of the codebase.
-//!
-//! ### Doesn't that introduce a lot of code?
-//!
-//! - Not currently. The shell crate is currently less than 1k lines of code.
-//!   Some expansion is certainly to be expected, but goal is to keep the crate
-//!   to 2k lines or less including documentation.
-//!
-//! ### What about performance?
-//!
-//! - Each window event imposes a hash table lookup and a function call, with
-//!   some trivial data transformations in between. Previous attempts at
-//!   windowing suggest that a hash table would be required anyway, so any major
-//!   performance cost would likely come from Winit.
-
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use geometry::{Extent, Offset, Point, ScreenPx};
@@ -469,7 +431,7 @@ type DeferredDestroy = Rc<RefCell<Vec<winit::window::WindowId>>>;
 /// Creates the described windows and runs the OS event loop until all windows
 /// are destroyed.
 #[allow(clippy::too_many_lines)]
-pub fn run<'a, Handler, I>(window_descs: I)
+pub fn enter_event_loop<'a, Handler, I>(window_descs: I)
 where
     Handler: WindowHandler + 'static,
     I: IntoIterator<Item = WindowDesc<'a, Handler>>,

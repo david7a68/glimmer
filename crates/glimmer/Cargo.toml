@@ -5,8 +5,7 @@ edition = "2021"
 
 [dependencies]
 geometry    = { path = "../geometry" }
-graphics    = { path = "../graphics" }
-shell       = { path = "../shell" }
+visuals     = { path = "../visuals" }
 widgets     = { path = "../widgets" }
 raw-window-handle = "0.5.0"
 crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }

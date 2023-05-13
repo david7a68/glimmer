@@ -32,6 +32,7 @@ impl<'a> FrameAllocator<'a> {
 
         let tail_ptr = self.allocator.bytes_freed % self.allocator.capacity;
         let base_ptr = self.bytes_allocated % self.allocator.capacity;
+
         let aligned_ptr = next_multiple_of(base_ptr, alignment);
 
         if size > self.allocator.capacity {

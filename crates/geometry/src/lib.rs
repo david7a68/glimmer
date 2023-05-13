@@ -20,6 +20,34 @@ impl<T, U> Rect<T, U> {
         Self(euclid::Box2D::from_origin_and_size(origin, extent))
     }
 
+    pub fn left(&self) -> T
+    where
+        T: Copy,
+    {
+        self.0.min.x
+    }
+
+    pub fn right(&self) -> T
+    where
+        T: Copy,
+    {
+        self.0.max.x
+    }
+
+    pub fn top(&self) -> T
+    where
+        T: Copy,
+    {
+        self.0.min.y
+    }
+
+    pub fn bottom(&self) -> T
+    where
+        T: Copy,
+    {
+        self.0.max.y
+    }
+
     pub fn top_left(&self) -> Point<T, U>
     where
         T: Copy,
