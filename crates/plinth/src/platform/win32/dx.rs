@@ -4,7 +4,7 @@ use windows::{
     Win32::Graphics::{Direct3D::D3D_FEATURE_LEVEL_11_0, Direct3D12::*, Dxgi::*},
 };
 
-use crate::{GraphicsConfig, PowerPreference};
+use crate::graphics::{GraphicsConfig, PowerPreference};
 
 pub struct Interfaces {
     pub is_debug: bool,

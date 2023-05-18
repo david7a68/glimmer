@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use crate::Color;
+use super::Color;
 
 /// Describes the binary representation of a pixel in a pixel buffer.
 #[repr(u8)]

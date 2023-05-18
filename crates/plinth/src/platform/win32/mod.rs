@@ -1,5 +1,3 @@
-//! # DX12 backend
-
 use std::{cell::Cell, ptr::NonNull};
 
 use geometry::{Extent, ScreenPx};
@@ -17,14 +15,15 @@ use windows::{
 };
 
 use crate::{
+    graphics::{
+        Color, ColorSpace, GraphicsConfig, PixelBuffer, PixelBufferRef, PixelFormat, RenderGraph,
+        RenderGraphCommand, RenderGraphNodeId, RoundedRectVertex,
+    },
     memory::{
         block_allocator::BlockAllocator,
         temp_allocator::{self, FrameMarker},
         HeapOffset,
     },
-    pixel_buffer::{ColorSpace, PixelBufferRef, PixelFormat},
-    render_graph::{RenderGraph, RenderGraphCommand},
-    Color, GraphicsConfig, PixelBuffer, RenderGraphNodeId, RoundedRectVertex,
 };
 
 mod dx;
@@ -35,7 +34,7 @@ pub use surface::Surface;
 
 use self::queue::SubmissionId;
 
-pub struct GraphicsContext {
+pub struct Platform {
     dx: dx::Interfaces,
     graphics_queue: queue::Graphics<FrameMarker>,
 
@@ -49,7 +48,7 @@ pub struct GraphicsContext {
     descriptor_heap: DescriptorHeap,
 }
 
-impl GraphicsContext {
+impl Platform {
     const UPLOAD_BUFFER_SIZE: u64 = 20 * 1024 * 1024;
     const MAX_TEXTURES: u32 = 1024;
 
@@ -344,7 +343,7 @@ impl GraphicsContext {
     }
 }
 
-impl Drop for GraphicsContext {
+impl Drop for Platform {
     fn drop(&mut self) {
         self.graphics_queue.flush();
     }

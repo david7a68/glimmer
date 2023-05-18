@@ -1,11 +1,21 @@
+pub mod color;
+pub mod pixel_buffer;
+pub mod render_graph;
+
 use std::cell::RefCell;
 
-use crate::{pixel_buffer::PixelBufferRef, Color, RenderGraph};
-use geometry::{Extent, Point, Px, Rect};
 use raw_window_handle::HasRawWindowHandle;
 
-#[cfg(target_os = "windows")]
-use crate::dx12 as platform;
+use geometry::{Extent, Point, Px, Rect};
+use structures::generational_pool::{GenerationalPool, Handle};
+
+pub use self::{
+    color::Color,
+    pixel_buffer::{ColorSpace, PixelBuffer, PixelBufferRef, PixelFormat},
+    render_graph::{RenderGraph, RenderGraphCommand, RenderGraphNodeId},
+};
+
+use crate::platform;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -29,7 +39,6 @@ pub enum RectPart<T> {
     BottomRight(T),
 }
 
-use structures::generational_pool::{GenerationalPool, Handle};
 pub use RectPart::*;
 
 #[derive(Clone)]
@@ -191,7 +200,7 @@ pub struct GraphicsConfig {
 
 pub struct GraphicsContext {
     image_handles: RefCell<GenerationalPool<platform::Image>>,
-    inner: RefCell<platform::GraphicsContext>,
+    inner: RefCell<platform::Platform>,
 }
 
 impl GraphicsContext {
@@ -199,7 +208,7 @@ impl GraphicsContext {
     pub fn new(config: &GraphicsConfig) -> Self {
         Self {
             image_handles: GenerationalPool::new().into(),
-            inner: RefCell::new(platform::GraphicsContext::new(config)),
+            inner: RefCell::new(platform::Platform::new(config)),
         }
     }
 

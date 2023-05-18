@@ -2,13 +2,12 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use geometry::{Extent, Point, Rect, ScreenPx};
 use plinth::{
-    window::{
-        ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
-        WindowSpawner,
+    graphics::{
+        BottomLeft, BottomRight, Color, DrawRect, GraphicsConfig, GraphicsContext, Image, Left,
+        PixelBuffer, RenderGraph, RenderGraphNodeId, Right, Surface, TopLeft, TopRight,
     },
-    Color, DrawRect, GraphicsConfig, GraphicsContext, Image, PixelBuffer,
-    RectPart::{BottomLeft, BottomRight, Left, Right, TopLeft, TopRight},
-    RenderGraph, RenderGraphNodeId, Surface,
+    input::{ButtonState, MouseButton, VirtualKeyCode},
+    window::{Window, WindowDesc, WindowFlags, WindowHandler, WindowSpawner},
 };
 
 #[derive(Clone)]

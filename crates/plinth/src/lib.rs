@@ -36,18 +36,39 @@
 //!
 //! - 2022-12-19: Work begins after a few false starts.
 
-mod color;
-mod graphics;
-mod memory;
-mod pixel_buffer;
-mod render_graph;
+pub mod graphics;
+pub mod input;
 pub mod window;
 
-#[cfg(target_os = "windows")]
-mod dx12;
+mod memory;
+mod platform;
 
-pub use color::Color;
-pub use graphics::*;
-pub use graphics::*;
-pub use pixel_buffer::PixelBuffer;
-pub use render_graph::{RenderGraph, RenderGraphNodeId};
+use graphics::GraphicsConfig;
+pub use graphics::PowerPreference;
+
+pub struct Config {
+    pub debug_mode: bool,
+    pub power_preference: PowerPreference,
+}
+
+pub struct Plinth {
+    platform: platform::Platform,
+}
+
+impl Plinth {
+    #[must_use]
+    pub fn new(config: &Config) -> Self {
+        Self {
+            platform: platform::Platform::new(&GraphicsConfig {
+                debug_mode: config.debug_mode,
+                power_preference: config.power_preference,
+            }),
+        }
+    }
+
+    pub fn create_window(&mut self) -> () {
+        todo!()
+    }
+
+    // run_event_loop()
+}

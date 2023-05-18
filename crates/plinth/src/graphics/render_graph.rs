@@ -1,4 +1,4 @@
-use crate::{DrawRect, RoundedRectVertex};
+use super::{DrawRect, RoundedRectVertex};
 
 #[allow(clippy::module_name_repetitions)]
 #[repr(u16)]

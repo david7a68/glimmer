@@ -1,7 +1,7 @@
 use geometry::{Extent, Point, ScreenPx};
-use plinth::window::{
-    ButtonState, MouseButton, VirtualKeyCode, Window, WindowDesc, WindowFlags, WindowHandler,
-    WindowSpawner,
+use plinth::{
+    input::{ButtonState, MouseButton, VirtualKeyCode},
+    window::{Window, WindowDesc, WindowFlags, WindowHandler, WindowSpawner},
 };
 
 fn main() {
